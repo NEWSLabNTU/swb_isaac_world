@@ -9,8 +9,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csb_isaac import surface_layer, surfaces  # noqa: E402
-from csb_isaac.surfaces import RoadCondition, Surface, SurfaceError  # noqa: E402
+from isaac_world import surface_layer, surfaces  # noqa: E402
+from isaac_world.surfaces import RoadCondition, Surface, SurfaceError  # noqa: E402
 
 TABLE = surfaces.load_classes()
 SQUARE = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]

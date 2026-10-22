@@ -3,10 +3,10 @@
 Every entity is an Xform at the SSv2 entity origin carrying a rigid body, with one child cube
 collider placed and scaled to the declared box. A kinematic body's pose is written into the
 Xform's translate and orient ops (PhysX follows a kinematic body's USD pose), and read back
-from PhysX after the step, so the state csb gets is the physics engine's, not an echo. A
+from PhysX after the step, so the state swb gets is the physics engine's, not an echo. A
 tracked body (roadmap 044) is dynamic -- gravity, mass, the road under it -- and driven by
-the velocity csb sends, written through PhysX's tensor API before the substeps, as CARLA's
-`set_target_velocity` is before its tick; csb's fallback can make it kinematic for good. The
+the velocity swb sends, written through PhysX's tensor API before the substeps, as CARLA's
+`set_target_velocity` is before its tick; swb's fallback can make it kinematic for good. The
 ego and tracked bodies report contacts; the scene reports kinematic pairs too. A pedestrian
 stays a kinematic box and wears a CARLA walker that plays its walk or idle cycle by the speed
 SSv2 moves it at (044 C, `walkers`).
@@ -16,7 +16,7 @@ body resting on its road is not a contact.
 With an ego config (`--ego`, roadmaps 038, 045) the ego is not a box but aib's ego
 (autoware_isaac_bridge: `aib.isaac.ego.Ego`, built from the config's rig): a PhysX vehicle
 with Autoware's sensors and vehicle interface on its own ROS domain. Physics moves it, from
-Autoware's commands, and SSv2 reads its pose back; a pose csb sends for it is a teleport.
+Autoware's commands, and SSv2 reads its pose back; a pose swb sends for it is a teleport.
 Rendering is then on every frame its sensors need, whatever the request asks.
 
 A world with a surface map (`<map>/surfaces.yaml`, roadmap 047; `surface_layer`) sets each
@@ -35,14 +35,14 @@ from isaacsim.core.api import World
 from isaacsim.core.utils.stage import add_reference_to_stage
 from pxr import Gf, PhysicsSchemaTools, PhysxSchema, Sdf, Usd, UsdGeom, UsdLux, UsdPhysics
 
-from csb_world_server.world import World as WorldBase
+from swb_world_server.world import World as WorldBase
 
 from . import motion as body_motion, signals as signal_table, surfaces, vehicle_assets
 from . import walkers as walker_gait
 from .catalogue import check_ego, ego_model, load_ego
 from .surface_layer import SurfaceLayer
 
-log = logging.getLogger("csb_isaac")
+log = logging.getLogger("isaac_world")
 
 # A step slower than this is logged with where the time went.
 SLOW_STEP_S = 0.5
@@ -57,10 +57,10 @@ WARM_UP_HANDLE = 0
 ENVIRONMENT = "/World/env"
 GROUND_PLANE = "/World/defaultGroundPlane"
 # A tracked body's collider material (roadmap 044): friction against the road. Lower than
-# PhysX's default 0.5 so the velocity csb sets once per frame is not eaten by sliding friction
+# PhysX's default 0.5 so the velocity swb sets once per frame is not eaten by sliding friction
 # over the frame's substeps; a body held back by a contact is held by the contact, not this.
 TRACKED_MATERIAL = "/World/Looks/csbTrackedBody"
-TRACKED_FRICTION = float(os.environ.get("CSB_TRACKED_FRICTION", "0.1"))
+TRACKED_FRICTION = float(os.environ.get("SWB_TRACKED_FRICTION", "0.1"))
 # Where a despawned entity spends its last step (`despawn`), m.
 BURY_Z = -1000.0
 # The PhysX step that hands a structural stage edit over between frames, s (`_egos_keep_motion`).
@@ -100,7 +100,7 @@ def _quat(wxyz):
 
 
 class IsaacWorld(WorldBase):
-    """The world protocol's `World` on Isaac Sim (roadmap 046: `csb_world_server`)."""
+    """The world protocol's `World` on Isaac Sim (roadmap 046: `swb_world_server`)."""
 
     simulator_name = "isaac"
     capabilities = ("SIGNALS", "TRACKED_MOTION", "CONTACTS")
@@ -144,7 +144,7 @@ class IsaacWorld(WorldBase):
                            rendering_dt=physics_dt)
         self.dt = physics_dt
         self.stage = omni.usd.get_context().get_stage()
-        # CARLA's vehicles exported to USD (CSB_VEHICLE_USD): an entity whose Spawn names one
+        # CARLA's vehicles exported to USD (SWB_VEHICLE_USD): an entity whose Spawn names one
         # wears it; any other stays the box.
         self.vehicle_assets = vehicle_assets.VehicleAssets()
         if self.ego_rig is not None:
@@ -381,9 +381,9 @@ class IsaacWorld(WorldBase):
         self.signal_groups = signal_table.groups(self.signal_table, self.signal_colours)
 
     def preload(self, usd, renders=PRELOAD_RENDERS):
-        """Load `usd` and render it before csb asks for it: the first render of a large world
+        """Load `usd` and render it before swb asks for it: the first render of a large world
         compiles its materials (about 9 minutes for CARLA's Town01), which no request timeout
-        should have to cover. csb's `LoadWorld` of the same path then keeps it."""
+        should have to cover. swb's `LoadWorld` of the same path then keeps it."""
         t = time.perf_counter()
         self.load(usd, [])
         for _ in range(renders):
@@ -434,7 +434,7 @@ class IsaacWorld(WorldBase):
             # 11400 points of it in Autoware's obstacle cloud, a stop for "route-obstacle").
             UsdGeom.Imageable(self.stage.GetPrimAtPath(ego.vehicle.body_path)).MakeInvisible()
             prim = self.stage.GetPrimAtPath(path)
-            prim.SetCustomDataByKey("csb:name", name)
+            prim.SetCustomDataByKey("swb:name", name)
             PhysxSchema.PhysxContactReportAPI.Apply(prim).CreateThresholdAttr(0.0)
             self.reporters.add(handle)
             self.egos[handle] = ego
@@ -451,7 +451,7 @@ class IsaacWorld(WorldBase):
                      "render(s), %.1f s", name, path, dims, center, frames, time.perf_counter() - t)
             return
         root = UsdGeom.Xform.Define(self.stage, path)
-        root.GetPrim().SetCustomDataByKey("csb:name", name)
+        root.GetPrim().SetCustomDataByKey("swb:name", name)
         translate = root.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble)
         orient = root.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble)
         translate.Set(Gf.Vec3d(*pose[0]))
@@ -672,7 +672,7 @@ class IsaacWorld(WorldBase):
             body.GetAngularVelocityAttr().Set(Gf.Vec3f(*(math.degrees(c) for c in w)))
 
     def _to_kinematic(self, handle, path=None):
-        """csb's fallback: the tracked body is kinematic from now on (`path` given: it is
+        """swb's fallback: the tracked body is kinematic from now on (`path` given: it is
         being despawned)."""
         quiet = path is not None
         path = path or self.entities[handle][0]
@@ -681,7 +681,7 @@ class IsaacWorld(WorldBase):
         self.fresh.discard(handle)
         self.tracked_view = None
         if not quiet:
-            log.info("%s: tracked body handed to kinematic (csb's fallback)", path)
+            log.info("%s: tracked body handed to kinematic (swb's fallback)", path)
 
     def despawn(self, handle):
         path, translate, _ = self.entities.pop(handle)

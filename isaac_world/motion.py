@@ -2,7 +2,7 @@
 
 A tracked entity is a dynamic rigid body whose Xform sits at the SSv2 entity origin (the rear
 axle, for a vehicle) while PhysX's linear velocity is its centre of mass's, at the declared
-box centre. csb speaks of the origin's velocity, PhysX of the centre's; `v_com = v_o + w x r`
+box centre. swb speaks of the origin's velocity, PhysX of the centre's; `v_com = v_o + w x r`
 with `r` the centre's offset turned into the world frame, and back.
 
 Quaternions are `(w, x, y, z)`, vectors `(x, y, z)`, world frame.

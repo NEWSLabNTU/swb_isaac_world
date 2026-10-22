@@ -1,6 +1,6 @@
 """Traffic signals in the Isaac world (roadmap 044 B), pure Python so it is tested without Isaac.
 
-csb sends the map's signal table with `LoadWorld` (per Lanelet2 traffic light way: its
+swb sends the map's signal table with `LoadWorld` (per Lanelet2 traffic light way: its
 regulatory elements, OpenDRIVE id, CARLA position with Y flipped) and the colours SSv2
 commands with `SetSignals`, by OpenDRIVE id. A CARLA town exported with SimReady has one
 prim per CARLA traffic light carrying `omni:simready:signalID` (its OpenDRIVE id) at the

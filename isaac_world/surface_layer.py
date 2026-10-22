@@ -1,5 +1,5 @@
 """The surface layer on Isaac (roadmap 047 S1): each ego wheel's friction, every physics step,
-from the loaded world's surface map (`csb_isaac.surfaces`). Import after `SimulationApp`.
+from the loaded world's surface map (`isaac_world.surfaces`). Import after `SimulationApp`.
 
 After each substep the wheel's ground hit (aib's `Vehicle.contacts`) names a point and a
 collider: the collider's SimReady label (`semantics:labels:wikidata_qcode` on it or an
@@ -8,7 +8,7 @@ the next substep goes into the wheel's own table (`Vehicle.set_wheel_friction`).
 with no surface map is left alone: every wheel keeps the rig's tire friction.
 
 Where the map comes from: `surfaces.yaml` in the map directory of a world file the server
-was started with (`--world`); csb's `LoadWorld` sends only the USD, which `register` maps
+was started with (`--world`); swb's `LoadWorld` sends only the USD, which `register` maps
 back. (046's world protocol v4 is the place for the map to say so itself.)
 """
 import logging
@@ -16,7 +16,7 @@ import os
 
 from . import surfaces
 
-log = logging.getLogger("csb_isaac")
+log = logging.getLogger("isaac_world")
 
 QCODE_ATTR = "semantics:labels:wikidata_qcode"
 

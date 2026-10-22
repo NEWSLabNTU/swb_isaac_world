@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A CARLA town as an Isaac world (roadmap 043): export it with SimReady when its USD is
-# missing, write its collider layer (csb_isaac.physics_layer) and its world file
-# (csb_isaac.usd_world) for the town's Autoware map.
+# missing, write its collider layer (isaac_world.physics_layer) and its world file
+# (isaac_world.usd_world) for the town's Autoware map.
 #
 #   isaac_town.sh <Town> [map_path:=<dir>] [export:=true]
 #
@@ -26,7 +26,7 @@ set -euo pipefail
 usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [ $# -ge 1 ] || usage
 town=$1; shift
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # src/csb_isaac
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # src/isaac_world
 project=$(cd "$here/../.." && pwd)
 map_path=""; force=false
 for a in "$@"; do
@@ -103,5 +103,5 @@ set -u
 cd "$here"
 # The export's props are crate 0.7.0; pxr warns once per file without this.
 export PXR_USDC_EMIT_DEPRECATION_WARNINGS=0
-python -m csb_isaac.physics_layer "$usd"
-python -m csb_isaac.usd_world "$map_path" "$out/${town}_physics.usda"
+python -m isaac_world.physics_layer "$usd"
+python -m isaac_world.usd_world "$map_path" "$out/${town}_physics.usda"

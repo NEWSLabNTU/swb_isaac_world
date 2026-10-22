@@ -7,8 +7,8 @@ import traceback
 
 import unreal
 
-OUT = os.environ.get("CSB_PHYS_OUT", "/mnt/disk1/csb-043-vehicle/ue/ue_physics.json")
-ONLY = [s for s in os.environ.get("CSB_VEH_ONLY", "").split(",") if s]
+OUT = os.environ.get("SWB_PHYS_OUT", "/mnt/disk1/csb-043-vehicle/ue/ue_physics.json")
+ONLY = [s for s in os.environ.get("SWB_VEH_ONLY", "").split(",") if s]
 
 
 def conv(x, depth=0):

@@ -10,6 +10,6 @@ source $I/venv/bin/activate
 uv pip install --upgrade pip
 uv pip install torch==2.11.0 --index-url https://download.pytorch.org/whl/cu128
 uv pip install "isaacsim[all,extscache]==6.1.0.0" --extra-index-url https://pypi.nvidia.com --index-strategy unsafe-best-match --prerelease=allow
-uv pip install pyzmq  # the csb world protocol (037) and the lockstep spike
+uv pip install pyzmq  # the swb world protocol (037) and the lockstep spike
 python -c "import importlib.metadata as m; print('isaacsim', m.version('isaacsim'))"
 echo INSTALL-DONE

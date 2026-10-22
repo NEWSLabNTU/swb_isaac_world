@@ -1,6 +1,6 @@
 """Step responses of vehicle.tesla.model3 on CARLA 0.9.16 through acb_bridge's actuation
 (vehicle_control.rs / longitudinal_map.rs, replicated here): pedal maps, Ackermann steer
-inverse, steering-curve compensation, handbrake hold. Timing as csb: 0.05 s ticks, physics
+inverse, steering-curve compensation, handbrake hold. Timing as swb: 0.05 s ticks, physics
 substeps of 0.05/16.
 
     python3 carla_step.py OUT_DIR [TOWN]

@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csb_isaac import motion  # noqa: E402
+from isaac_world import motion  # noqa: E402
 
 YAW_90 = (math.cos(math.pi / 4), 0.0, 0.0, math.sin(math.pi / 4))
 

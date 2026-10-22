@@ -1,16 +1,16 @@
 """Wrap each SimReady vehicle export as a render-only asset, and tabulate them (plain pxr;
-isaac_vehicles.sh, roadmap 043). csb_isaac.vehicle_assets reads what this writes.
+isaac_vehicles.sh, roadmap 043). isaac_world.vehicle_assets reads what this writes.
 
-    python -I vehicle_usd_assets.py $CSB_VEHICLE_USD
+    python -I vehicle_usd_assets.py $SWB_VEHICLE_USD
 
 For every `<root>/<blueprint id>/<blueprint_id>.usd` (the SimReady map export of a level
 holding only that blueprint at the origin), writes `<root>/<blueprint id>/<blueprint id>.usda`:
 default prim `/Vehicle` referencing the export's `/Root`, with the actor's lamps
-(SphereLights), its collision mesh, arrow and bounds box deactivated, and `customData` `csb`
+(SphereLights), its collision mesh, arrow and bounds box deactivated, and `customData` `swb`
 carrying the geometry below. Writes `<root>/vehicles.json` and `<root>/vehicles.md`.
 
 A two-wheeler's rider (roadmap 044, open item 2), exported in its rest pose, is seated on it:
-`csb_isaac.rider` poses it from the bike's Seat, handlebar and pedal joints, with the grip of
+`isaac_world.rider` poses it from the bike's Seat, handlebar and pedal joints, with the grip of
 `<root>/riders/grip.npz` when `isaac_vehicles.sh riders:=true` has made it, and the wrapper
 carries that pose as a static SkelAnimation `/Vehicle/RiderPose` bound to the rider's
 SkelRoot; vehicles.json marks the entry `rider_pose` (such a body cannot be instanceable: a
@@ -26,8 +26,8 @@ from pathlib import Path
 import numpy as np
 from pxr import Gf, Pcp, Sdf, Usd, UsdGeom, UsdLux, UsdSkel, Vt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # csb_isaac
-from csb_isaac import rider  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # isaac_world
+from isaac_world import rider  # noqa: E402
 
 root = Path(sys.argv[1])
 meta = {m["id"]: m for m in json.loads((root / "ue_meta.json").read_text())}
@@ -189,14 +189,14 @@ for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("v
     v.GetPrim().GetReferences().AddReference("./" + raw.name, "/Root")
     for path in drop:
         w.OverridePrim(str(path).replace("/Root", "/Vehicle", 1)).SetActive(False)
-    csb = {k: info[k] for k in ("id", "render_min", "render_max", "rear_axle_x", "wheel_base", "track")
+    swb = {k: info[k] for k in ("id", "render_min", "render_max", "rear_axle_x", "wheel_base", "track")
            if info[k] is not None}
-    csb["frame"] = "CARLA actor origin; metres, Z up, x forward, y left (CARLA Y flipped)"
+    swb["frame"] = "CARLA actor origin; metres, Z up, x forward, y left (CARLA Y flipped)"
     if carla_bbox:
-        csb["carla_bbox_center"] = carla_bbox["center"]
-        csb["carla_bbox_extent"] = carla_bbox["extent"]
+        swb["carla_bbox_center"] = carla_bbox["center"]
+        swb["carla_bbox_extent"] = carla_bbox["extent"]
     for wh in wl:
-        csb[wh["name"]] = {"path": wh["path"], "pos": wh["pos"],
+        swb[wh["name"]] = {"path": wh["path"], "pos": wh["pos"],
                            **({"radius": wh["radius"]} if wh["radius"] else {})}
     if seated is not None:
         skel_root, joints, rotations, translations, scales, _ = seated
@@ -207,8 +207,8 @@ for d in sorted(p for p in root.iterdir() if p.is_dir() and p.name.startswith("v
         anim.CreateScalesAttr(Vt.Vec3hArray([Gf.Vec3h(*map(float, s)) for s in scales]))
         over = w.OverridePrim(str(skel_root).replace("/Root", "/Vehicle", 1))
         UsdSkel.BindingAPI.Apply(over).CreateAnimationSourceRel().SetTargets([anim.GetPath()])
-        csb["rider_pose"] = info["rider_pose"]
-    v.GetPrim().SetCustomDataByKey("csb", csb)
+        swb["rider_pose"] = info["rider_pose"]
+    v.GetPrim().SetCustomDataByKey("swb", swb)
     layer.Save()
     print(f"{bp_id}: {info['render_size']} wheels {len(wl)} dropped {len(drop)}")
 

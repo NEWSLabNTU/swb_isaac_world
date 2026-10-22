@@ -1,7 +1,7 @@
 """Wrap each SimReady prop export as a render-only asset, and tabulate them (plain pxr;
-`isaac_vehicles.sh props:=true`, roadmap 044). csb_isaac.vehicle_assets reads what this writes.
+`isaac_vehicles.sh props:=true`, roadmap 044). isaac_world.vehicle_assets reads what this writes.
 
-    python -I prop_usd_assets.py $CSB_VEHICLE_USD/props
+    python -I prop_usd_assets.py $SWB_VEHICLE_USD/props
 
 For every `<root>/<blueprint id>/<blueprint_id>.usd` (the SimReady map export of a level
 holding only that prop's static mesh at the origin), writes `<root>/<blueprint id>/<blueprint

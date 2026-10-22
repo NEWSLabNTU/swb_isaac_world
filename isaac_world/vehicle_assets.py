@@ -2,7 +2,7 @@
 
 The assets are CARLA 0.9.16's vehicle blueprints exported with NVIDIA's SimReady converter
 (CARLA's editor, one level per blueprint, `-run=SimReadyExport`), one directory per
-blueprint id under `CSB_VEHICLE_USD` (default `/mnt/disk1/carla-usd/vehicles`), indexed by
+blueprint id under `SWB_VEHICLE_USD` (default `/mnt/disk1/carla-usd/vehicles`), indexed by
 its `vehicles.json`:
 
 - `<id>/<id>.usda`, default prim `/Vehicle`: the whole car, lamps and collision mesh off.
@@ -12,7 +12,7 @@ its `vehicles.json`:
   axle along y.
 
 An NPC's body sits with its CARLA bounding box centred, in x and y, on the declared box's,
-its wheels on the ground plane of the entity origin: where csb's CARLA backend puts the same
+its wheels on the ground plane of the entity origin: where swb's CARLA backend puts the same
 blueprint (`origin_offset`). The ego's sits with its rear axle on base_link and wears the
 car's own wheels on the PhysX wheel prims, which follow suspension, steering and spin. The
 boxes stay the colliders, made invisible (to cameras and the RTX lidar alike) when a body
@@ -24,15 +24,15 @@ degenerate in the export's metadata and their render width is the rider's. CARLA
 (`isaac_vehicles.sh props:=true`, `<root>/props/props.json`) dress MiscObjects that name a
 `static.prop.*` blueprint; one naming a vehicle wears that vehicle. CARLA's walkers
 (`isaac_vehicles.sh walkers:=true`, `<root>/walkers/walkers.json`, roadmap 044 C) dress
-pedestrians, played by `csb_isaac.walkers`. A two-wheeler's rider sits on it
-(`csb_isaac.rider`, baked into the wrapper by `vehicle_usd_assets.py`).
+pedestrians, played by `isaac_world.walkers`. A two-wheeler's rider sits on it
+(`isaac_world.rider`, baked into the wrapper by `vehicle_usd_assets.py`).
 """
 import json
 import logging
 import os
 from pathlib import Path
 
-log = logging.getLogger("csb_isaac")
+log = logging.getLogger("isaac_world")
 
 DEFAULT_ROOT = "/mnt/disk1/carla-usd/vehicles"
 # vehicle.py's PhysX wheel prims -> the export's wheel names
@@ -44,7 +44,7 @@ class VehicleAssets:
     """The exported bodies by CARLA blueprint id; empty (every entity a box) without them."""
 
     def __init__(self, root=None):
-        self.root = Path(root or os.environ.get("CSB_VEHICLE_USD", DEFAULT_ROOT))
+        self.root = Path(root or os.environ.get("SWB_VEHICLE_USD", DEFAULT_ROOT))
         index = self.root / "vehicles.json"
         self.by_id = {}
         if index.exists():

@@ -1,7 +1,7 @@
 """CARLA's walker ids -> blueprints, read from WalkerFactory's package (roadmap 044, open item 3).
 
     python3 walker_factory_ids.py $CARLA_SRC/carla/Unreal/CarlaUE4/Content/Carla/Blueprints/Walkers/WalkerFactory.uasset \
-        > ../csb_isaac/walker_blueprints.json
+        > ../isaac_world/walker_blueprints.json
 
 WalkerFactory builds its pedestrians in its Blueprint graph, which an editor script cannot run
 in a commandlet. The graph's compiled bytecode has them all: per pedestrian an EX_StringConst

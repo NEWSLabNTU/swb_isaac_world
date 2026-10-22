@@ -1,4 +1,4 @@
-"""csb_isaac.rider: a two-wheeler's rider seated on its sockets (044 open item 2)."""
+"""isaac_world.rider: a two-wheeler's rider seated on its sockets (044 open item 2)."""
 import sys
 from pathlib import Path
 
@@ -7,7 +7,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from csb_isaac import rider  # noqa: E402
+from isaac_world import rider  # noqa: E402
 
 # A stick rider on CARLA's Gen2 joint names, in a y-up skeleton frame (x: the rider's left),
 # T-pose, joints' rotations identity: (name, parent, translation from the parent).

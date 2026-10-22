@@ -1,15 +1,15 @@
-"""The Isaac Sim world server (roadmaps 037, 046): `python -m csb_isaac.world_server`.
+"""The Isaac Sim world server (roadmaps 037, 046): `python -m isaac_world.world_server`.
 
 Starts Isaac Sim (headless unless `--display`), builds the world, and serves the world
-protocol on a ZMQ REP socket bound to localhost (the shell `csb_world_server`, which holds the
+protocol on a ZMQ REP socket bound to localhost (the shell `swb_world_server`, which holds the
 owner lease) until a client sends `Shutdown` or the process gets SIGINT/SIGTERM; it also
 ends when its parent does (a supervisor killed hard). Run it through `just isaac-world`, which
 sets Isaac's environment.
 
-    python -m csb_isaac.world_server --port 5590 [--display :8] [--ego <aib ego config>]
+    python -m isaac_world.world_server --port 5590 [--display :8] [--ego <aib ego config>]
         [--world <world>[,<world>...]] [--follow]
 
-A world is a world file (`<map>/isaac/world.yaml`, as csb's `LoadWorld` reads it), a map
+A world is a world file (`<map>/isaac/world.yaml`, as swb's `LoadWorld` reads it), a map
 directory (its `isaac/world.yaml`) or a USD file. Several, comma separated, are all loaded and
 rendered once before the server answers (roadmap 043: a town's first render compiles its
 materials, minutes, which a scenario's `LoadWorld` should not have to); the first one listed
@@ -34,7 +34,7 @@ def world_file(entry):
 
 def world_usd(entry):
     """The USD stage a `--world` entry names: a world file's `usd` (relative to its map
-    directory, as csb resolves it), a map directory's `isaac/world.yaml`, or a USD file."""
+    directory, as swb resolves it), a map directory's `isaac/world.yaml`, or a USD file."""
     path = world_file(entry)
     if path is None:
         return os.path.abspath(os.path.expanduser(entry))
@@ -69,7 +69,7 @@ def main(argv=None):
     ap.add_argument("--world", default="",
                     help="worlds to load and render before serving, comma separated: world "
                          "files, map directories or USD files (a first render compiles the "
-                         "world's materials); the first stays loaded, and csb's LoadWorld of "
+                         "world's materials); the first stays loaded, and swb's LoadWorld of "
                          "it keeps it")
     ap.add_argument("--ego", default="",
                     help="aib ego config (autoware_isaac_bridge's config/ego.yaml): the ego "
@@ -79,13 +79,13 @@ def main(argv=None):
                     help="the ego's ROS domain, over the ego config's (the ego stack's "
                          "ROS_DOMAIN_ID); 0: the config's")
     args = ap.parse_args(argv)
-    from csb_world_server import lifetime
-    from csb_world_server.server import bind, run
+    from swb_world_server import lifetime
+    from swb_world_server.server import bind, run
 
     lifetime.die_with_parent()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    log = logging.getLogger("csb_isaac")
+    log = logging.getLogger("isaac_world")
 
     preload = preload_list(args.world)
     socket = bind(args.port)

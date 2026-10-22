@@ -2,8 +2,8 @@
 
 The ego itself is aib's (autoware_isaac_bridge, `src/autoware_isaac_bridge`): an ego config
 (`aib/config/ego.yaml`) names a rig, the rig is the car (generated from aib's vehicle spec).
-What stays csb's is the CARLA side: the body the ego wears comes from the vehicle catalogue
-(CSB_VEHICLE_USD/vehicles.json, CARLA's blueprints exported to USD), and the catalogue's
+What stays swb's is the CARLA side: the body the ego wears comes from the vehicle catalogue
+(SWB_VEHICLE_USD/vehicles.json, CARLA's blueprints exported to USD), and the catalogue's
 `physics` (`scripts/dump_vehicle_physics.py`) must describe the same car as the rig's
 geometry, or the body's wheels would not sit on the PhysX wheels. `check_ego` refuses a
 mismatch at world server start; `physics_params` is CARLA's car as VehicleParams fields, for

@@ -29,7 +29,7 @@ front wheels' spacing), `wheel_radius` (the front wheels'), `rear_axle_x`.
 
 Each actor is destroyed with its children first (none are attached here; CLAUDE.md: never
 destroy a vehicle with sensors on it). The world is put in synchronous mode for the duration
-and restored; refuses if another client already owns the tick. On a testbed csb's simulation
+and restored; refuses if another client already owns the tick. On a testbed swb's simulation
 side (`just run`) owns it: run against a CARLA of your own on another port instead
 (`./CarlaUE4.sh -carla-rpc-port=3000 -nosound -RenderOffScreen`, Vulkan pinned to NVIDIA,
 then `--port 3000`; 41 vehicles take seconds) and kill that one by pid afterwards.

@@ -1,7 +1,7 @@
 """Keep the two-wheelers' riders' grip as arrays (plain pxr and numpy; `isaac_vehicles.sh
 riders:=true`, roadmap 044 open item 2). vehicle_usd_assets.py reads what this writes.
 
-    python -I rider_usd_assets.py $CSB_VEHICLE_USD/riders
+    python -I rider_usd_assets.py $SWB_VEHICLE_USD/riders
 
 From `<root>/rider_grip/rider_grip.usd` (the SimReady map export of a level holding a rider
 playing CARLA's `AS_Pedestrian_BikeHands`, a static pose) writes `<root>/grip.npz`: `joints`

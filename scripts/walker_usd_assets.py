@@ -1,8 +1,8 @@
 """Wrap each SimReady walker export as an asset, keep its cycles as arrays, and tabulate them
-(plain pxr and numpy; `isaac_vehicles.sh walkers:=true`, roadmap 044 C). csb_isaac's world
+(plain pxr and numpy; `isaac_vehicles.sh walkers:=true`, roadmap 044 C). isaac_world's world
 reads what this writes.
 
-    python -I walker_usd_assets.py $CSB_VEHICLE_USD/walkers
+    python -I walker_usd_assets.py $SWB_VEHICLE_USD/walkers
 
 For every `<root>/<id>/` holding `<id>_walk/<id>_walk.usd` and `<id>_idle/<id>_idle.usd` (the
 SimReady map exports of a level holding only that walker's skeletal mesh at the origin,
