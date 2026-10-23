@@ -16,7 +16,8 @@ sys.path.insert(0, str(AIB))
 if (AIB / "aib").is_dir():
     from aib.params import VehicleMismatch, bicycle_limit  # noqa: E402
 
-    from swb_isaac_world.catalogue import check_ego, ego_model, load_ego, physics_params  # noqa: E402
+    from swb_isaac_world.catalogue import (check_ego, ego_body, ego_model, load_ego,  # noqa: E402
+                                           physics_params)
 
 DEFAULT_EGO = AIB / "config/ego.yaml"
 
@@ -70,6 +71,18 @@ class EgoTest(unittest.TestCase):
     def test_the_default_ego_wears_the_tesla(self):
         self.assertEqual(ego_model(self.rig), "vehicle.tesla.model3")
         self.assertEqual(self.cfg.vehicle or {}, {})
+
+    def test_the_ego_body_is_the_rigs_car_in_the_entity_frame(self):
+        # What the bridge compares with the vehicle catalog (roadmap 051): sim_vehicle_spec's
+        # Model 3, rear axle at the origin.
+        body = ego_body(self.rig)
+        self.assertEqual(body["model"], "vehicle.tesla.model3")
+        self.assertEqual(body["origin_offset"], (0.0, 0.0, 0.0))
+        for a, b in zip(body["box_location"], (1.416, 0.0, 0.744)):
+            self.assertAlmostEqual(a, b)
+        for a, b in zip(body["box_extent"], (4.792 / 2, 2.163 / 2, 1.488 / 2)):
+            self.assertAlmostEqual(a, b)
+        self.assertEqual(body["wheels"], (3.005, 0.0, 1.667, 0.37))
 
     def test_the_rig_is_the_catalogues_car(self):
         check_ego(self.rig, TESLA)

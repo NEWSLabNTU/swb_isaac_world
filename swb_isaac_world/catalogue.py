@@ -30,6 +30,20 @@ def ego_model(rig):
     return rig.catalogue_model or rig.vehicle.model or DEFAULT_MODEL
 
 
+def ego_body(rig):
+    """The ego's `Body` for the spawn reply: the rig's car, its box and its wheels in the entity
+    frame (base_link, the rear axle on the ground; roadmap 051). The bridge compares them with
+    what SSv2 declared (the vehicle catalog's) and refuses an ego more than 2 cm off."""
+    p = rig.vehicle
+    return {
+        "model": ego_model(rig),
+        "box_location": tuple(rig.box_center),
+        "box_extent": tuple(d / 2 for d in rig.box_dims),
+        "origin_offset": (0.0, 0.0, 0.0),
+        "wheels": (p.wheel_base, 0.0, p.wheel_tread, p.wheel_radius),
+    }
+
+
 def check_ego(rig, physics):
     """Raise aib.params.VehicleMismatch when the rig's geometry and the catalogue's `physics`
     for its body differ on wheel base, tread or radius by more than 5 cm. No physics (the

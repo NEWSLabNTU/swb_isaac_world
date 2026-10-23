@@ -41,7 +41,7 @@ from swb_world_server.world import World as WorldBase
 from . import motion as body_motion, signals as signal_table, sky as scenario_sky, surfaces
 from . import vehicle_assets
 from . import walkers as walker_gait
-from .catalogue import check_ego, ego_model, load_ego
+from .catalogue import check_ego, ego_body, ego_model, load_ego
 from .surface_layer import SurfaceLayer, kinematic_wheels
 
 log = logging.getLogger("swb_isaac_world")
@@ -604,7 +604,7 @@ class IsaacWorld(WorldBase):
 
     def spawn(self, handle, name, kind, subtype, center, dims, pose, model="", motion="KINEMATIC"):
         with self._egos_keep_motion():
-            self._spawn(handle, name, kind, subtype, center, dims, pose, model, motion)
+            return self._spawn(handle, name, kind, subtype, center, dims, pose, model, motion)
 
     def _spawn(self, handle, name, kind, subtype, center, dims, pose, model, motion):
         path = f"{ENTITIES}/e{handle}"
@@ -655,7 +655,7 @@ class IsaacWorld(WorldBase):
             frames = ego.warm_up(warm_step)
             log.info("spawned ego %r as PhysX vehicle %s (box %s at %s); sensors warm after %d "
                      "render(s), %.1f s", name, path, dims, center, frames, time.perf_counter() - t)
-            return
+            return ego_body(self.ego_rig)
         root = UsdGeom.Xform.Define(self.stage, path)
         root.GetPrim().SetCustomDataByKey("swb:name", name)
         translate = root.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble)
