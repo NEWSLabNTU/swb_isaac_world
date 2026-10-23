@@ -15,8 +15,9 @@ import carla
 sys.path.insert(0, str(Path(__file__).parent))
 from step_common import DT, TESTS, command  # noqa: E402
 
-ACB = (Path(__file__).resolve().parents[3] / "autoware_carla_bridge/src/acb_vehicle_launch/"
-       "acb_vehicle_description/config")
+# The car's pedal maps (autoware_sim_vehicle's, beside this in a scenario-world-bridge checkout)
+ACB = (Path(__file__).resolve().parents[3] / "autoware_sim_vehicle/cars/tesla_model3/"
+       "tesla_model3_description/config")
 OUT = Path(sys.argv[1])
 TOWN = sys.argv[2] if len(sys.argv) > 2 else "Town06"
 OUT.mkdir(parents=True, exist_ok=True)
