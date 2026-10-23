@@ -5,3 +5,4 @@
 [submodule "deps/autoware_isaac_bridge"]
 	path = deps/autoware_isaac_bridge
 	url = https://github.com/NEWSLabNTU/autoware_isaac_bridge.git
+	branch = target-shape
