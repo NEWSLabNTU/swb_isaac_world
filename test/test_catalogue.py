@@ -83,6 +83,7 @@ class EgoTest(unittest.TestCase):
         for a, b in zip(body["box_extent"], (4.792 / 2, 2.163 / 2, 1.488 / 2)):
             self.assertAlmostEqual(a, b)
         self.assertEqual(body["wheels"], (3.005, 0.0, 1.667, 0.37))
+        self.assertEqual(len(body["spec_hash"]), 64)
 
     def test_the_rig_is_the_catalogues_car(self):
         check_ego(self.rig, TESLA)

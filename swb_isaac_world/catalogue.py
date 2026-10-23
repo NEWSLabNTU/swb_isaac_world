@@ -32,7 +32,7 @@ def ego_model(rig):
 
 def ego_body(rig):
     """The ego's `Body` for the spawn reply: the rig's car, its box and its wheels in the entity
-    frame (base_link, the rear axle on the ground; roadmap 051). The bridge compares them with
+    frame (base_link, the rear axle on the ground; roadmap 051), and its spec_hash. The bridge compares them with
     what SSv2 declared (the vehicle catalog's) and refuses an ego more than 2 cm off."""
     p = rig.vehicle
     return {
@@ -41,6 +41,9 @@ def ego_body(rig):
         "box_extent": tuple(d / 2 for d in rig.box_dims),
         "origin_offset": (0.0, 0.0, 0.0),
         "wheels": (p.wheel_base, 0.0, p.wheel_tread, p.wheel_radius),
+        # The spec the rig was generated from: the bridge compares it with the vehicle
+        # agent's and the catalog's before the scenario starts.
+        "spec_hash": rig.spec_hash,
     }
 
 
