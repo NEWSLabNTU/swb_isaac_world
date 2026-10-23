@@ -1,7 +1,7 @@
 """Where does a soil tile rebuild's memory go, and which way of rebuilding keeps none
 (roadmap 047 S3, docs/issues/001)?
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/tile_memory.py
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/tile_memory.py
     # prints one SPIKE-RESULT json
 
 One 1.6 m tile (33 x 33 vertices) rebuilt N times per variant, a physics step after each,

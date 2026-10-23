@@ -31,7 +31,7 @@ from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
 
 from . import ground_cut, soil
 
-log = logging.getLogger("isaac_world")
+log = logging.getLogger("swb_isaac_world")
 
 ROOT = "/World/soil"
 TILE_BLOCKS = 2

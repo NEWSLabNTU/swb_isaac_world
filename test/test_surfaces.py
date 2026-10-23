@@ -9,8 +9,8 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from isaac_world import surface_layer, surfaces  # noqa: E402
-from isaac_world.surfaces import RoadCondition, Surface, SurfaceError  # noqa: E402
+from swb_isaac_world import surface_layer, surfaces  # noqa: E402
+from swb_isaac_world.surfaces import RoadCondition, Surface, SurfaceError  # noqa: E402
 
 TABLE = surfaces.load_classes()
 SQUARE = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
@@ -235,7 +235,7 @@ class RutsTest(unittest.TestCase):
                 layer.set_condition(1.0, "dry", {"swb.ruts": value})
             self.assertIn(needle, str(e.exception))
         # a set from a map whose zone is not here
-        from isaac_world import soil
+        from swb_isaac_world import soil
         g = soil.SoilGrid(TABLE["sand"].soil)
         g.begin_step()
         g.wheel(0, 1.0, 0.0, 0.0, 4500.0, 0.37, 0.235, 5.0, 5.0, 1 / 60)

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # CARLA's vehicles as Isaac assets (roadmap 043, "Vehicle model"): every blueprint in CARLA
 # 0.9.16's VehicleFactory exported to USD with SimReady and wrapped as a render-only asset,
-# with the catalogue isaac_world.vehicle_assets reads (vehicles.json: each car's CARLA box,
+# with the catalogue swb_isaac_world.vehicle_assets reads (vehicles.json: each car's CARLA box,
 # wheels, wheel base).
 #
 #   isaac_vehicles.sh [only:=<id>,<id>...] [export:=true] [props:=true] [walkers:=true]
@@ -43,7 +43,7 @@
 set -euo pipefail
 
 usage() { sed -n '2,38p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # src/isaac_world
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # src/swb_isaac_world
 only=""; force=false; props=false; walkers=false; riders=false
 for a in "$@"; do
     case "$a" in

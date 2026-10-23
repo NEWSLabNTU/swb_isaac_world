@@ -97,7 +97,7 @@ left.CreateFrictionValuesAttr([1.0, 0.35])
 left.CreateDefaultFrictionValueAttr(1.0)
 
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
-    os.path.dirname(__file__), "../../autoware_isaac_bridge/src/aib/config/ego.yaml"))
+    os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
 pose = ((0.0, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0))
 veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims, pose)

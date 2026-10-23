@@ -3,7 +3,7 @@ layer, scripted, at speeds Autoware's routes never reach. What the pad (`surface
 cannot show: the town's own colliders and SimReady labels resolving to classes, the map
 frame lining up, and the same surface cases on real road geometry.
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/surface_town.py \
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/surface_town.py \
         [<Town01_physics.usda>]          # default $CARLA_USD/Town01/Town01_physics.usda
     # prints one SPIKE-RESULT json
 
@@ -32,8 +32,8 @@ from pxr import UsdPhysics  # noqa: E402
 from aib.control import GEAR_DRIVE, Command, State  # noqa: E402
 from aib.isaac.vehicle import Vehicle, ensure_vehicle_scene  # noqa: E402
 from aib.rig import EgoConfig  # noqa: E402
-from isaac_world import surfaces  # noqa: E402
-from isaac_world.surface_layer import SurfaceLayer  # noqa: E402
+from swb_isaac_world import surfaces  # noqa: E402
+from swb_isaac_world.surface_layer import SurfaceLayer  # noqa: E402
 
 USD = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
     os.environ.get("CARLA_USD", "/mnt/disk1/carla-usd"), "Town01", "Town01_physics.usda")
@@ -72,7 +72,7 @@ if not any(pr.IsA(UsdPhysics.Scene) for pr in stage.Traverse()):
     UsdPhysics.Scene.Define(stage, "/World/physicsScene")
 ensure_vehicle_scene(stage)
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
-    os.path.dirname(__file__), "../../autoware_isaac_bridge/src/aib/config/ego.yaml"))
+    os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
 veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims,
               ((LANE_X, START_Y, 0.3), HEADING))

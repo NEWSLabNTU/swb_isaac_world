@@ -7,7 +7,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from isaac_world import vehicle_assets  # noqa: E402
+from swb_isaac_world import vehicle_assets  # noqa: E402
 
 CATALOGUE = [
     {"id": "vehicle.mini.cooper_s_2021", "wheels_n": 4, "base_type": "car",

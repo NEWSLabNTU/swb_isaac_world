@@ -1,5 +1,5 @@
 """Wrap each SimReady vehicle export as a render-only asset, and tabulate them (plain pxr;
-isaac_vehicles.sh, roadmap 043). isaac_world.vehicle_assets reads what this writes.
+isaac_vehicles.sh, roadmap 043). swb_isaac_world.vehicle_assets reads what this writes.
 
     python -I vehicle_usd_assets.py $SWB_VEHICLE_USD
 
@@ -11,7 +11,7 @@ carrying the geometry below. Writes `<root>/vehicles.json` (paths relative to `<
 `<root>/vehicles.md`.
 
 A two-wheeler's rider (roadmap 044, open item 2), exported in its rest pose, is seated on it:
-`isaac_world.rider` poses it from the bike's Seat, handlebar and pedal joints, with the grip of
+`swb_isaac_world.rider` poses it from the bike's Seat, handlebar and pedal joints, with the grip of
 `<root>/riders/grip.npz` when `isaac_vehicles.sh riders:=true` has made it, and the wrapper
 carries that pose as a static SkelAnimation `/Vehicle/RiderPose` bound to the rider's
 SkelRoot; vehicles.json marks the entry `rider_pose` (such a body cannot be instanceable: a
@@ -27,8 +27,8 @@ from pathlib import Path
 import numpy as np
 from pxr import Gf, Pcp, Sdf, Usd, UsdGeom, UsdLux, UsdSkel, Vt
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # isaac_world
-from isaac_world import rider  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))  # swb_isaac_world
+from swb_isaac_world import rider  # noqa: E402
 
 root = Path(sys.argv[1])
 

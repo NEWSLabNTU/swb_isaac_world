@@ -1,0 +1,16 @@
+# Cargo and colcon
+target/
+build/
+install/
+log/
+# Python
+__pycache__/
+*.py[oc]
+
+# BEGIN colcon-cargo-ros2
+.cargo/config.toml
+# END colcon-cargo-ros2
+
+# BEGIN colcon-cargo-ros2
+.cargo/config.toml
+# END colcon-cargo-ros2

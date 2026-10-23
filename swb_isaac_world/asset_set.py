@@ -1,8 +1,8 @@
 """The Isaac asset set's manifest: write it, check a copy against it
 (docs/design/isaac-assets.md; `just isaac-assets`). Plain Python, no Isaac.
 
-    python3 -m isaac_world.asset_set manifest <root>   # README.md and MANIFEST.sha256
-    python3 -m isaac_world.asset_set check <root>      # exit 1 on a missing or changed file
+    python3 -m swb_isaac_world.asset_set manifest <root>   # README.md and MANIFEST.sha256
+    python3 -m swb_isaac_world.asset_set check <root>      # exit 1 on a missing or changed file
 
 MANIFEST.sha256 is `sha256sum`'s format (`sha256sum -c` reads it too), paths relative to the
 root. Skipped: `logs/` and `raw/` directories, `*.pre<N>` backups, the manifest itself.

@@ -44,7 +44,7 @@ from . import walkers as walker_gait
 from .catalogue import check_ego, ego_model, load_ego
 from .surface_layer import SurfaceLayer, kinematic_wheels
 
-log = logging.getLogger("isaac_world")
+log = logging.getLogger("swb_isaac_world")
 
 # A step slower than this is logged with where the time went.
 SLOW_STEP_S = 0.5

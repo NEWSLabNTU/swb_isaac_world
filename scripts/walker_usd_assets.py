@@ -1,5 +1,5 @@
 """Wrap each SimReady walker export as an asset, keep its cycles as arrays, and tabulate them
-(plain pxr and numpy; `isaac_vehicles.sh walkers:=true`, roadmap 044 C). isaac_world's world
+(plain pxr and numpy; `isaac_vehicles.sh walkers:=true`, roadmap 044 C). swb_isaac_world's world
 reads what this writes.
 
     python -I walker_usd_assets.py $SWB_VEHICLE_USD/walkers

@@ -1,7 +1,7 @@
 """The scenario sky on the world server's own code (roadmap 047): `IsaacWorld.set_environment`
 on a small world that brings its own sun and dome, as a SimReady town does, seen by a camera.
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/sky_world.py
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/sky_world.py
     # prints one SPIKE-RESULT json
 
 Cases, each a camera's mean brightness (0-255) and which lights are on: the world's own lights;
@@ -22,7 +22,7 @@ import numpy as np  # noqa: E402
 import omni.replicator.core as rep  # noqa: E402
 from pxr import Gf, Usd, UsdGeom, UsdLux  # noqa: E402
 
-from isaac_world.world import ENVIRONMENT, SUN, IsaacWorld  # noqa: E402
+from swb_isaac_world.world import ENVIRONMENT, SUN, IsaacWorld  # noqa: E402
 
 ENV_USDA = """#usda 1.0
 (

@@ -1,8 +1,8 @@
-"""isaac_world.walkers: cycles sampled, gait by speed, a walker picked (044 C)."""
+"""swb_isaac_world.walkers: cycles sampled, gait by speed, a walker picked (044 C)."""
 import numpy as np
 import pytest
 
-from isaac_world import walkers
+from swb_isaac_world import walkers
 
 
 def cycle(frames=5, fps=4.0):

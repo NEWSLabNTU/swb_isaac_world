@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from isaac_world import sky  # noqa: E402
-from isaac_world.sky import Sky  # noqa: E402
+from swb_isaac_world import sky  # noqa: E402
+from swb_isaac_world.sky import Sky  # noqa: E402
 
 
 def deg(x):

@@ -1,4 +1,4 @@
-"""The Isaac Sim world server (roadmaps 037, 046): `python -m isaac_world.world_server`.
+"""The Isaac Sim world server (roadmaps 037, 046): `python -m swb_isaac_world.world_server`.
 
 Starts Isaac Sim (headless unless `--display`), builds the world, and serves the world
 protocol on a ZMQ REP socket bound to localhost (the shell `swb_world_server`, which holds the
@@ -6,7 +6,7 @@ owner lease) until a client sends `Shutdown` or the process gets SIGINT/SIGTERM;
 ends when its parent does (a supervisor killed hard). Run it through `just isaac-world`, which
 sets Isaac's environment.
 
-    python -m isaac_world.world_server --port 5590 [--display :8] [--ego <aib ego config>]
+    python -m swb_isaac_world.world_server --port 5590 [--display :8] [--ego <aib ego config>]
         [--world <world>[,<world>...]] [--follow]
 
 A world is a world file (`<map>/isaac/world.yaml`, as swb's `LoadWorld` reads it), a map
@@ -85,7 +85,7 @@ def main(argv=None):
     lifetime.die_with_parent()
     logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    log = logging.getLogger("isaac_world")
+    log = logging.getLogger("swb_isaac_world")
 
     preload = preload_list(args.world)
     socket = bind(args.port)

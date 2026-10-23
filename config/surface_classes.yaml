@@ -14,7 +14,7 @@
 #   hydroplaning  true where standing water lifts the tire (paved, impermeable); loose and
 #          soft ground soaks it instead.
 #   soil   Bekker-Wong-Janosi parameters, for a soil zone of this class (047 S3,
-#          isaac_world.soil): n, k_c N/m^(n+1), k_phi N/m^(n+2), cohesion Pa, friction_angle
+#          swb_isaac_world.soil): n, k_c N/m^(n+1), k_phi N/m^(n+2), cohesion Pa, friction_angle
 #          deg, janosi_k m; elastic_k Pa/m and slip_sinkage (Lyasko's slip sinkage to this
 #          power, default 1) optional. A class without them cannot be a soil
 #          zone's. From Wong, Theory of Ground Vehicles (Table 2.3, the Land Locomotion Lab's

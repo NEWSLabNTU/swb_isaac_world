@@ -1,5 +1,5 @@
 """Static colliders for a CARLA town exported to USD (roadmap 043):
-`python -m isaac_world.physics_layer <Town>.usd [-o <Town>_physics.usda]`.
+`python -m swb_isaac_world.physics_layer <Town>.usd [-o <Town>_physics.usda]`.
 
 CARLA 0.9.16's SimReady exporter (`UE4Editor-Cmd ... -run=SimReadyExport -COLLISION=true`)
 parses its "export physics data" switch into `bExportPhysics`, and nothing reads it: the
@@ -27,9 +27,9 @@ Left without a collider:
   navigation is generated from) and the like. What the lidar cannot see should not hold a
   car up either.
 
-The layer is the file the Isaac world names (`isaac_world.usd_world`).
+The layer is the file the Isaac world names (`swb_isaac_world.usd_world`).
 
-    python -m isaac_world.physics_layer /mnt/disk1/carla-usd/Town02/Town02.usd
+    python -m swb_isaac_world.physics_layer /mnt/disk1/carla-usd/Town02/Town02.usd
 """
 import argparse
 import os

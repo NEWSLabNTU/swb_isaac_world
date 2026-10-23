@@ -6,7 +6,7 @@
   ego's stack (the ego's /clock comes from here).
 
     play_launch launch FLAGS \
-        swb_launch isaac_world.launch.xml [ego:=default|none|<yaml>] \
+        swb_isaac_world swb_isaac_world.launch.xml [ego:=default|none|<yaml>] \
         [world:=<world>[,<world>...]] [follow:=true] [render:=auto|window|headless]
 
     FLAGS are the play_launch options web-addr 127.0.0.1:<SWB_WEB_PORT+5> (8085) and log-dir play_log/isaac
@@ -26,7 +26,7 @@
 -->
 <launch>
   <arg name="ego" default="default"
-       description="the ego's YAML: default (aib's src/autoware_isaac_bridge/src/aib/config/ego.yaml: aib's Tesla Model 3, a PhysX vehicle with Autoware's sensors and vehicle interface), none (037's kinematic box) or a path to an aib ego config"/>
+       description="the ego's YAML: default (aib's deps/autoware_isaac_bridge/src/aib/config/ego.yaml: aib's Tesla Model 3, a PhysX vehicle with Autoware's sensors and vehicle interface), none (037's kinematic box) or a path to an aib ego config"/>
   <arg name="world" default="none"
        description="worlds to preload, comma separated: world files (map/isaac/world.yaml), map directories or USD files; the first stays loaded; none: nothing"/>
   <arg name="follow" default="false"
@@ -36,7 +36,7 @@
 
   <!-- respawn_delay is a literal (stock ros2 launch rejects a substitution there). 10 s
        lets the dead server's GPU memory and port go before the next one claims them. -->
-  <node pkg="swb_launch" exec="isaac_world_server" name="isaac_world" output="screen"
+  <node pkg="swb_isaac_world" exec="swb_isaac_world_server" name="swb_isaac_world" output="screen"
         respawn="true" respawn_delay="10.0"
         args="--port $(env ISAAC_PORT 5590) --ego $(var ego) --ego-domain $(env EGO_ROS_DOMAIN_ID 1) --world $(var world) --follow $(var follow) --render $(var render)"/>
 </launch>

@@ -1,7 +1,7 @@
 """Does the RTX lidar see the ruts the wheels feel (roadmap 047 S3)? And what does a tile
 rebuild cost with an RTX sensor rendering?
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/soil_lidar.py
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/soil_lidar.py
     # prints one SPIKE-RESULT json
 
 A sand zone whose ground is the server's tiles (`soil_tiles.SoilTiles`, `ground_z` 0) on an
@@ -26,8 +26,8 @@ import omni.usd  # noqa: E402
 from isaacsim.core.api import World  # noqa: E402
 from pxr import Gf, UsdGeom, UsdLux  # noqa: E402
 
-from isaac_world import soil, surfaces  # noqa: E402
-from isaac_world.soil_tiles import SoilTiles  # noqa: E402
+from swb_isaac_world import soil, surfaces  # noqa: E402
+from swb_isaac_world.soil_tiles import SoilTiles  # noqa: E402
 
 H = 2.0
 TRACKS = (-0.8, 0.8)

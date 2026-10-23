@@ -5,7 +5,7 @@ anywhere and the maths is unit-tested.
 `<map>/surfaces.yaml` (047 D1) says what every piece of ground is:
 
     classes: surface_classes.yaml      # optional: a class table beside the map; default the
-                                       # one shipped in src/isaac_world/config/
+                                       # one shipped in src/swb_isaac_world/config/
     allow_unvalidated: [mud_wet]       # optional: classes whose soil parameters are a stand-in
                                        # (the table's `unvalidated:`) that soil zones here may
                                        # use; any other such zone is refused (047 D6)
@@ -42,8 +42,8 @@ A wheel's friction, every physics step (`WheelSurfaces`):
 filtered over `blend_length` of travel, then shaped by the class's slip curve. On dry
 reference ground (asphalt) that is the rig's own tire_friction.
 
-    python -m isaac_world.surfaces check <map dir | surfaces.yaml>
-    python -m isaac_world.surfaces plot <map dir | surfaces.yaml> [-o out.png]
+    python -m swb_isaac_world.surfaces check <map dir | surfaces.yaml>
+    python -m swb_isaac_world.surfaces plot <map dir | surfaces.yaml> [-o out.png]
 """
 import argparse
 import dataclasses
@@ -63,7 +63,7 @@ FILE = "surfaces.yaml"
 WETNESS = ("dry", "moist", "wetWithPuddles", "lowFlooded", "highFlooded")
 LABELS = ("Road", "RoadLine", "SideWalk", "Terrain", "Ground")
 UNLABELLED = "unlabelled"
-# SimReady's Wikidata Q-codes for CARLA's ground classes (as isaac_world.usd_world reads them).
+# SimReady's Wikidata Q-codes for CARLA's ground classes (as swb_isaac_world.usd_world reads them).
 QCODE_LABELS = {"Q34442": "Road", "Q177749": "SideWalk", "Q1392287": "RoadLine",
                 "Q186131": "Terrain", "Q36133": "Ground"}
 ZONE_ID = re.compile(r"^[a-z0-9_]+$")

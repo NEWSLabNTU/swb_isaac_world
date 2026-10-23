@@ -1,7 +1,7 @@
-"""Drive test (roadmap 047 S3): aib's Model 3 through the soil layer (`isaac_world.soil`, via
-`isaac_world.surface_layer`, the world server's own code) on a flat pad, one lane per zone.
+"""Drive test (roadmap 047 S3): aib's Model 3 through the soil layer (`swb_isaac_world.soil`, via
+`swb_isaac_world.surface_layer`, the world server's own code) on a flat pad, one lane per zone.
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/soil_drive.py
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/soil_drive.py
     # prints one SPIKE-RESULT json
 
 The pad is one mesh labelled Road, so outside a zone every wheel is on dry asphalt; zones
@@ -47,9 +47,9 @@ from pxr import Gf, PhysicsSchemaTools, Sdf, UsdGeom, UsdPhysics  # noqa: E402
 from aib.control import GEAR_DRIVE, Command, State  # noqa: E402
 from aib.isaac.vehicle import Vehicle, ensure_vehicle_scene  # noqa: E402
 from aib.rig import EgoConfig  # noqa: E402
-from isaac_world import soil as soil_model, surfaces  # noqa: E402
-from isaac_world.soil_tiles import SoilTiles  # noqa: E402
-from isaac_world.surface_layer import QCODE_ATTR, SurfaceLayer  # noqa: E402
+from swb_isaac_world import soil as soil_model, surfaces  # noqa: E402
+from swb_isaac_world.soil_tiles import SoilTiles  # noqa: E402
+from swb_isaac_world.surface_layer import QCODE_ATTR, SurfaceLayer  # noqa: E402
 
 FRAME, SUB = 0.05, 3
 dt = FRAME / SUB
@@ -96,7 +96,7 @@ if not any(pr.IsA(UsdPhysics.Scene) for pr in stage.Traverse()):
     UsdPhysics.Scene.Define(stage, "/World/physicsScene")
 ensure_vehicle_scene(stage)
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
-    os.path.dirname(__file__), "../../autoware_isaac_bridge/src/aib/config/ego.yaml"))
+    os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
 veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims,
               ((0.0, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0)))

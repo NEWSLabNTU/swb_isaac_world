@@ -1,5 +1,5 @@
 """The surface layer on Isaac (roadmap 047 S1): each ego wheel's friction, every physics step,
-from the loaded world's surface map (`isaac_world.surfaces`). Import after `SimulationApp`.
+from the loaded world's surface map (`swb_isaac_world.surfaces`). Import after `SimulationApp`.
 
 After each substep the wheel's ground hit (aib's `Vehicle.contacts`) names a point and a
 collider: the collider's SimReady label (`semantics:labels:wikidata_qcode` on it or an
@@ -13,7 +13,7 @@ the USD, which `register` maps back. (046's world protocol is the place for the 
 itself.)
 
 In a soil zone (047 S3, `soil: grid | closed_form`) each wheel also runs the soil layer
-(`isaac_world.soil`) on the load PhysX's suspension reports: the soil-limited friction replaces
+(`swb_isaac_world.soil`) on the load PhysX's suspension reports: the soil-limited friction replaces
 the class's in the wheel's table, and the soil's resistance pushes back on the body at the
 contact, for the next substep (`apply_force`, the host's `apply_force_at_pos`). Both fade in
 over `SOIL_BLEND` wheel diameters from the zone's edge. A zone with `ground_z` has the
@@ -33,7 +33,7 @@ import os
 
 from . import soil, surfaces
 
-log = logging.getLogger("isaac_world")
+log = logging.getLogger("swb_isaac_world")
 
 QCODE_ATTR = "semantics:labels:wikidata_qcode"
 # The soil's share grows from 0 on a soil zone's edge to 1 this many wheel diameters inside.

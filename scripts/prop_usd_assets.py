@@ -1,5 +1,5 @@
 """Wrap each SimReady prop export as a render-only asset, and tabulate them (plain pxr;
-`isaac_vehicles.sh props:=true`, roadmap 044). isaac_world.vehicle_assets reads what this writes.
+`isaac_vehicles.sh props:=true`, roadmap 044). swb_isaac_world.vehicle_assets reads what this writes.
 
     python -I prop_usd_assets.py $SWB_VEHICLE_USD/props
 

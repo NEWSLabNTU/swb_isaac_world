@@ -2,7 +2,7 @@
 
 Needs pxr, which Isaac's venv has and the system Python does not (skipped there):
 
-    source src/isaac_world/scripts/isaac_env.sh && python -m unittest discover -s src/isaac_world/test
+    source src/swb_isaac_world/scripts/isaac_env.sh && python -m unittest discover -s src/swb_isaac_world/test
 """
 import os
 import sys
@@ -12,7 +12,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from isaac_world import physics_layer  # noqa: E402
+from swb_isaac_world import physics_layer  # noqa: E402
 
 try:
     from pxr import Sdf, Usd, UsdGeom, UsdPhysics

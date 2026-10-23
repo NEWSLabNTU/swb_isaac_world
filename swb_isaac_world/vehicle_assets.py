@@ -25,15 +25,15 @@ degenerate in the export's metadata and their render width is the rider's. CARLA
 (`isaac_vehicles.sh props:=true`, `<root>/props/props.json`) dress MiscObjects that name a
 `static.prop.*` blueprint; one naming a vehicle wears that vehicle. CARLA's walkers
 (`isaac_vehicles.sh walkers:=true`, `<root>/walkers/walkers.json`, roadmap 044 C) dress
-pedestrians, played by `isaac_world.walkers`. A two-wheeler's rider sits on it
-(`isaac_world.rider`, baked into the wrapper by `vehicle_usd_assets.py`).
+pedestrians, played by `swb_isaac_world.walkers`. A two-wheeler's rider sits on it
+(`swb_isaac_world.rider`, baked into the wrapper by `vehicle_usd_assets.py`).
 """
 import json
 import logging
 import os
 from pathlib import Path
 
-log = logging.getLogger("isaac_world")
+log = logging.getLogger("swb_isaac_world")
 
 DEFAULT_ROOT = "/mnt/disk1/carla-usd/vehicles"
 # vehicle.py's PhysX wheel prims -> the export's wheel names

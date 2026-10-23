@@ -3,7 +3,7 @@ command sequences as carla_step.py: the world as the world server builds it (fla
 the ego spawned as swb spawns it, commands put straight into the ego's command slot (what its
 /control/command/control_cmd subscriber does), 0.05 s frames of 3 PhysX steps as swb steps it.
 
-    source src/isaac_world/scripts/isaac_env.sh
+    source src/swb_isaac_world/scripts/isaac_env.sh
     python isaac_step.py EGO_YAML OUT_DIR LABEL
 
 EGO_YAML: an aib ego config (src/autoware_isaac_bridge/src/aib/config/ego.yaml's form) with
@@ -30,7 +30,7 @@ from isaacsim import SimulationApp  # noqa: E402
 
 app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]})  # no crash uploads
 from aib.control import GEAR_DRIVE  # noqa: E402
-from isaac_world.world import IsaacWorld  # noqa: E402
+from swb_isaac_world.world import IsaacWorld  # noqa: E402
 
 world = IsaacWorld(ego_config=EGO)
 SUB = 3

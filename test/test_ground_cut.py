@@ -6,7 +6,7 @@ from pathlib import Path
 import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from isaac_world import ground_cut  # noqa: E402
+from swb_isaac_world import ground_cut  # noqa: E402
 
 
 def area(points, counts, indices):

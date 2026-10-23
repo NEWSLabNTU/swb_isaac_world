@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A CARLA town as an Isaac world (roadmap 043): export it with SimReady when its USD is
-# missing, write its collider layer (isaac_world.physics_layer) and its world file
-# (isaac_world.usd_world) for the town's Autoware map.
+# missing, write its collider layer (swb_isaac_world.physics_layer) and its world file
+# (swb_isaac_world.usd_world) for the town's Autoware map.
 #
 #   isaac_town.sh <Town> [map_path:=<dir>] [export:=true]
 #
@@ -26,8 +26,7 @@ set -euo pipefail
 usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [ $# -ge 1 ] || usage
 town=$1; shift
-here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # src/isaac_world
-project=$(cd "$here/../.." && pwd)
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # this repository
 map_path=""; force=false
 for a in "$@"; do
     case "$a" in
@@ -40,11 +39,11 @@ CARLA_SRC=${CARLA_SRC:-/mnt/disk1/carla-src}
 CARLA_USD=${CARLA_USD:-/mnt/disk1/carla-usd}
 if [ -z "$map_path" ]; then
     for m in "$town" "${town%HD}"; do
-        if [ -d "$project/data/carla-autoware-bridge/$m" ]; then
-            map_path="$project/data/carla-autoware-bridge/$m"; break
+        if [ -n "${CARLA_MAPS:-}" ] && [ -d "$CARLA_MAPS/$m" ]; then
+            map_path="$CARLA_MAPS/$m"; break
         fi
     done
-    [ -n "$map_path" ] || { echo "isaac_town: no Autoware map for $town under data/carla-autoware-bridge (map_path:=)" >&2; exit 1; }
+    [ -n "$map_path" ] || { echo "isaac_town: no Autoware map for $town under \$CARLA_MAPS (map_path:=)" >&2; exit 1; }
 fi
 out="$CARLA_USD/$town"
 usd="$out/$town.usd"
@@ -103,5 +102,5 @@ set -u
 cd "$here"
 # The export's props are crate 0.7.0; pxr warns once per file without this.
 export PXR_USDC_EMIT_DEPRECATION_WARNINGS=0
-python -m isaac_world.physics_layer "$usd"
-python -m isaac_world.usd_world "$map_path" "$out/${town}_physics.usda"
+python -m swb_isaac_world.physics_layer "$usd"
+python -m swb_isaac_world.usd_world "$map_path" "$out/${town}_physics.usda"

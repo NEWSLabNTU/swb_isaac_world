@@ -4,7 +4,7 @@ Model 3 driven through it on town01_ego_drive's road. What the pad cannot show: 
 road tiles, lane markings, a crosswalk and the landscape under them, and the frame time of a
 whole town with a zone in it.
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/soil_town.py \\
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/soil_town.py \\
         [<Town01_physics.usda>]          # default $CARLA_USD/Town01/Town01_physics.usda
     # prints one SPIKE-RESULT json
 
@@ -40,9 +40,9 @@ from pxr import PhysicsSchemaTools, UsdPhysics  # noqa: E402
 from aib.control import GEAR_DRIVE, Command, State  # noqa: E402
 from aib.isaac.vehicle import Vehicle, ensure_vehicle_scene  # noqa: E402
 from aib.rig import EgoConfig  # noqa: E402
-from isaac_world import surfaces  # noqa: E402
-from isaac_world.soil_tiles import SoilTiles  # noqa: E402
-from isaac_world.surface_layer import SurfaceLayer  # noqa: E402
+from swb_isaac_world import surfaces  # noqa: E402
+from swb_isaac_world.soil_tiles import SoilTiles  # noqa: E402
+from swb_isaac_world.surface_layer import SurfaceLayer  # noqa: E402
 
 USD = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
     os.environ.get("CARLA_USD", "/mnt/disk1/carla-usd"), "Town01", "Town01_physics.usda")
@@ -64,7 +64,7 @@ if not any(pr.IsA(UsdPhysics.Scene) for pr in stage.Traverse()):
     UsdPhysics.Scene.Define(stage, "/World/physicsScene")
 ensure_vehicle_scene(stage)
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
-    os.path.dirname(__file__), "../../autoware_isaac_bridge/src/aib/config/ego.yaml"))
+    os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
 veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims,
               ((210.0, LINE_Y, 0.3), HEADING))

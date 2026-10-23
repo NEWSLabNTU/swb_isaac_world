@@ -20,7 +20,7 @@ With SWB_VEH_KIND=riders (roadmap 044, open item 2), the two-wheelers' riders' g
 `/Game/CSBRiderExport/rider_grip`, a SkeletalMeshActor of a rider (`SK_Female`, on the Gen2
 skeleton every rider of a CARLA two-wheeler has) playing `AS_Pedestrian_BikeHands` in
 single-node mode. That pose is the only part of CARLA's `AB_Biker` an export can carry (the rest
-is IK, which `isaac_world.rider` does offline); CARLA has no seated sequence on that skeleton
+is IK, which `swb_isaac_world.rider` does offline); CARLA has no seated sequence on that skeleton
 (`PedestrianOnSidecar` has no skeleton at all)."""
 import json
 import os

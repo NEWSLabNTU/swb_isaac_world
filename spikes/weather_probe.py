@@ -1,7 +1,7 @@
 """Weather and time-of-day probe (roadmap 047, after S2): what Isaac Sim 6.1 itself does with
 the parts of OpenSCENARIO's Environment swb does not send yet, measured on a test pad.
 
-    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/isaac_world/spikes/weather_probe.py
+    ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/weather_probe.py
     # prints one SPIKE-RESULT json
 
 A flat pad with 2 m boxes at 10-80 m down +x, an RTX lidar (OS1, as aib's ego) and an RGB

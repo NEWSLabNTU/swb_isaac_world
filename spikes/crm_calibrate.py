@@ -1,4 +1,4 @@
-"""Calibration (roadmap 047 S5): our soil grid (`isaac_world.soil`) against Chrono's single-wheel
+"""Calibration (roadmap 047 S5): our soil grid (`swb_isaac_world.soil`) against Chrono's single-wheel
 test rig on the same wheel, at the same load and slips. Two references:
 
   scm   Chrono's SCM terrain with the class's own Bekker-Wong-Janosi parameters: the same
@@ -10,7 +10,7 @@ test rig on the same wheel, at the same load and slips. Two references:
 Runs in Chrono's own environment (pychrono 10 from the projectchrono conda channel, CUDA for
 CRM), not Isaac's:
 
-    <chrono env>/bin/python src/isaac_world/spikes/crm_calibrate.py [scm|crm|grid ...] \\
+    <chrono env>/bin/python src/swb_isaac_world/spikes/crm_calibrate.py [scm|crm|grid ...] \\
         [--classes sand,dirt] [--slips 0,0.1,0.2,0.3,0.5] [--spacing 0.02] [--out res.json]
         [--lugs 24 --lug-h 0.02]          # a tread: bars on the rigid tire (default smooth)
     # prints one SPIKE-RESULT json per terrain
@@ -29,7 +29,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
-from isaac_world import soil, surfaces  # noqa: E402
+from swb_isaac_world import soil, surfaces  # noqa: E402
 
 R, B = 0.37, 0.235  # aib's default wheel (test_soil.py)
 LOAD = 4500.0  # N, a Model 3 wheel

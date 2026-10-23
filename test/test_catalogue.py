@@ -1,6 +1,6 @@
 """The ego (aib's rig) against CARLA's catalogue (roadmaps 043, 045): pure data, no Isaac.
 
-    python -m unittest discover -s src/isaac_world/test
+    python -m unittest discover -s src/swb_isaac_world/test
 """
 import copy
 import math
@@ -9,14 +9,14 @@ import unittest
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parents[1]
-AIB = HERE.parent / "autoware_isaac_bridge/src/aib"
+AIB = HERE / "deps/autoware_isaac_bridge/src/aib"
 sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(AIB))
 
 if (AIB / "aib").is_dir():
     from aib.params import VehicleMismatch, bicycle_limit  # noqa: E402
 
-    from isaac_world.catalogue import check_ego, ego_model, load_ego, physics_params  # noqa: E402
+    from swb_isaac_world.catalogue import check_ego, ego_model, load_ego, physics_params  # noqa: E402
 
 DEFAULT_EGO = AIB / "config/ego.yaml"
 
@@ -40,7 +40,7 @@ TESLA = {
 }
 
 
-@unittest.skipUnless((AIB / "aib").is_dir(), "no aib submodule (git submodule update --init)")
+@unittest.skipUnless((AIB / "aib").is_dir(), "no aib in deps/ (git submodule update --init --recursive)")
 class PhysicsTest(unittest.TestCase):
     def test_the_blueprint_gives_the_physics(self):
         p = physics_params(TESLA)
@@ -62,7 +62,7 @@ class PhysicsTest(unittest.TestCase):
         self.assertEqual(bicycle_limit(0.0, 3.0, 1.6), 0.0)
 
 
-@unittest.skipUnless(DEFAULT_EGO.exists(), "no aib submodule (git submodule update --init)")
+@unittest.skipUnless(DEFAULT_EGO.exists(), "no aib in deps/ (git submodule update --init --recursive)")
 class EgoTest(unittest.TestCase):
     def setUp(self):
         self.cfg, self.rig = load_ego(DEFAULT_EGO)

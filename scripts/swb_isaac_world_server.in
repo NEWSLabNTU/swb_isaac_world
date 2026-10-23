@@ -1,22 +1,22 @@
 #!/usr/bin/env bash
-# swb's Isaac Sim world server as a launch node (roadmap 043; isaac_world.launch.xml).
+# swb's Isaac Sim world server as a launch node (roadmap 043; swb_isaac_world.launch.xml).
 #
-#   isaac_world_server --port N --ego <yaml|none> [--ego-domain N] --world <worlds|none>
+#   swb_isaac_world_server --port N --ego <yaml|none> [--ego-domain N] --world <worlds|none>
 #                      --follow <bool> --render <auto|window|headless> [--ros-args ...]
 #
 # The world server is Python 3.12 in Isaac's venv with Isaac's own ROS 2 libraries
-# (src/isaac_world/scripts/isaac_env.sh); the system Humble a launch runs under must not leak
+# (scripts/isaac_env.sh); the system Humble a launch runs under must not leak
 # into it, so its paths are dropped here first. The launch's --ros-args (node name, remaps)
 # mean nothing to it and are dropped too. The ego is aib's (autoware_isaac_bridge, the
-# submodule beside isaac_world; roadmap 045): isaac_env.sh puts its package on PYTHONPATH, and
-# --ego default is its config/ego.yaml.
+# submodule at deps/autoware_isaac_bridge; roadmap 045): isaac_env.sh puts its package on
+# PYTHONPATH, and --ego default is its config/ego.yaml.
 #
-# Environment: SWB_ISAAC_DIR (default: the isaac_world this package was built beside),
+# Environment: SWB_ISAAC_DIR (default: the source tree this package was built from),
 # ISAAC_ROOT, DISPLAY (render auto/window), ISAAC_HEADLESS=1 (render auto: headless),
 # CYCLONEDDS_URI (passed through: the ego stack's DDS).
 set -e
-isaac_world="${SWB_ISAAC_DIR:-@SWB_ISAAC_DIR@}"
-aib_ego="$isaac_world/../autoware_isaac_bridge/src/aib/config/ego.yaml"
+swb_isaac_world="${SWB_ISAAC_DIR:-@SWB_ISAAC_DIR@}"
+aib_ego="$swb_isaac_world/deps/autoware_isaac_bridge/src/aib/config/ego.yaml"
 port=5590; ego=default; ego_domain=0; world=none; follow=false; render=auto
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -27,7 +27,7 @@ while [ $# -gt 0 ]; do
         --world) world="$2"; shift 2 ;;
         --follow) follow="$2"; shift 2 ;;
         --render) render="$2"; shift 2 ;;
-        *) echo "isaac_world_server: unknown argument '$1'" >&2; exit 2 ;;
+        *) echo "swb_isaac_world_server: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
 
@@ -43,9 +43,9 @@ case "$follow" in true|1) args+=(--follow) ;; esac
 display="${DISPLAY:-}"
 case "$render" in
     auto) [ -n "${ISAAC_HEADLESS:-}" ] && [ "${ISAAC_HEADLESS}" != 0 ] && display="" ;;
-    window) [ -n "$display" ] || { echo "isaac_world_server: render window needs DISPLAY" >&2; exit 2; } ;;
+    window) [ -n "$display" ] || { echo "swb_isaac_world_server: render window needs DISPLAY" >&2; exit 2; } ;;
     headless) display="" ;;
-    *) echo "isaac_world_server: render '$render' is not auto, window or headless" >&2; exit 2 ;;
+    *) echo "swb_isaac_world_server: render '$render' is not auto, window or headless" >&2; exit 2 ;;
 esac
 [ -n "$display" ] && args+=(--display "$display")
 
@@ -57,7 +57,7 @@ PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/opt/ros/\|^/opt/autoware/\
 export ISAAC_ROOT="${ISAAC_ROOT:-/mnt/disk1/isaac-sim}"
 export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 # shellcheck source=/dev/null
-source "$isaac_world/scripts/isaac_env.sh"
-cd "$isaac_world"
-echo "isaac_world_server: python -m isaac_world.world_server ${args[*]}"
-exec python -u -m isaac_world.world_server "${args[@]}"
+source "$swb_isaac_world/scripts/isaac_env.sh"
+cd "$swb_isaac_world"
+echo "swb_isaac_world_server: python -m swb_isaac_world.world_server ${args[*]}"
+exec python -u -m swb_isaac_world.world_server "${args[@]}"
