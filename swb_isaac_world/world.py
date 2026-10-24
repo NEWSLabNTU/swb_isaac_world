@@ -196,6 +196,9 @@ class IsaacWorld(WorldBase):
         self.rolling = {}  # handle -> an NPC vehicle's (path, wheels, mass) on the soil (047 S4)
         self.tracked_pose = {}  # handle -> a tracked NPC vehicle's (x, y, yaw) from PhysX
         self.walker_cycles = {}  # walker id -> its cycles, loaded once
+        # Catalogue bodies this process has rendered: the first render of one compiles its
+        # materials (40 s for a MetaHuman walker), which `spawn` takes, not a Step (044).
+        self.rendered_bodies = set()
         self.ground_cache = {}  # prim path -> whether it is ground (contacts)
         self.signal_table = []  # the map's signals, as LoadWorld gave them (044 B)
         self.signal_colours = {}  # OpenDRIVE id -> colour shown
@@ -730,6 +733,14 @@ class IsaacWorld(WorldBase):
         self.entities[handle] = (path, translate, orient)
         self.by_path[path] = handle
         body = asset or prop or walker
+        if body is not None and body["id"] not in self.rendered_bodies:
+            # Its materials compile on this render, under the bridge's load timeout, so the
+            # next Step stays within its request timeout. A render, no physics step.
+            t = time.perf_counter()
+            self.world.render()
+            self.rendered_bodies.add(body["id"])
+            log.info("first %s in this world server: rendered in %.1f s", body["id"],
+                     time.perf_counter() - t)
         log.info("spawned %s %r as %s (box %s at %s%s%s)", kind, name, path, dims, center,
                  f", body {body['id']}" if body is not None else "",
                  f", tracked, {mass:.0f} kg" if tracked else "")
