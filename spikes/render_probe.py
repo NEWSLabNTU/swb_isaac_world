@@ -10,8 +10,10 @@ Prints `PROBE frame <i> <ms>` for the first ten and every 500th, then `PROBE PAS
 frames`. On a host whose driver loses the GPU (that issue: Xid 109 then Xid 31, Vulkan
 ERROR_DEVICE_LOST) Kit exits within the first frames, with no PASS line; the kernel's
 `NVRM: Xid` lines (`journalctl -k`) say which. A SimReady CARLA town is the test that
-matters: `$CARLA_USD/Town01/Town01_physics.usda`.
+matters: `$CARLA_USD/Town01/Town01_physics.usda`. `PROBE_KIT_ARGS` adds Kit settings, e.g.
+`PROBE_KIT_ARGS="--/renderer/multiGpu/enabled=false --/app/renderer/resolution/width=640"`.
 """
+import os
 import sys
 import time
 
@@ -21,7 +23,8 @@ frames = int(sys.argv[2]) if len(sys.argv) > 2 else 2000
 from isaacsim import SimulationApp  # noqa: E402
 
 # Kit uploads a crash's minidump to NVIDIA by default: kept on disk only.
-app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]})
+app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]
+                     + os.environ.get("PROBE_KIT_ARGS", "").split()})
 
 import omni.usd  # noqa: E402
 from isaacsim.core.utils.stage import is_stage_loading  # noqa: E402
