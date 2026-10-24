@@ -24,8 +24,10 @@ rebuild was never freed). The ruts are fresh at every `fresh_soil` (a new owner 
 
 Every vehicle shares a zone's grid (047 S4). The egos run on it as above; a kinematic vehicle
 (an NPC SSv2 moves by pose) rolls on it without slip, its pose interpolated over the frame's
-substeps (`set_kinematic`, `roll_kinematic`), so its ruts are the egos' ground; it feels
-nothing back. Each substep updates the egos in handle order, then the kinematic vehicles in
+substeps (`set_kinematic`, `roll_kinematic`), so its ruts are the egos' ground. Its forces
+are not fed back, but its body shows how deep it stands: `kinematic_sinkage` gives each wheel's
+sinkage over the last frame (its own and the ruts it rides in), and `sink_pose` turns the four
+into the drop and tilt the world puts on its visible body (052 step 4). Each substep updates the egos in handle order, then the kinematic vehicles in
 path order, so two runs of a scenario cut the same ruts.
 """
 import logging
@@ -46,6 +48,9 @@ SOIL_SPACING = 0.05
 KINEMATIC_BASE, KINEMATIC_TREAD = 0.6, 0.85
 KINEMATIC_RADIUS, KINEMATIC_WIDTH = 0.33, 0.2
 KINEMATIC_JUMP = 5.0  # m in one frame: a teleport (100 m/s at 20 Hz)
+# The soil's motion resistance is full from this speed up and fades to none at rest, m/s: it
+# opposes motion that happens, it never pushes a car standing still (docs/issues/004).
+RESIST_V0 = 0.1
 G = 9.81
 
 
@@ -86,6 +91,7 @@ class SurfaceLayer:
         self.tiles = {}  # zone id -> its own ground (make_tiles)
         # vehicle path -> [previous (x, y, yaw), this frame's, wheels, radius, width, load]
         self.kinematic = {}
+        self.kinematic_sink = {}  # vehicle path -> each wheel's sinkage in the last substep, m
         self.ruts = None  # the rut set the soil started from (`swb.ruts`), None: fresh
         self.driven = False  # a wheel has driven on the soil since then
         self.saved = True  # nothing driven since the last save
@@ -208,7 +214,7 @@ class SurfaceLayer:
         self.soil_out[(vehicle.path, i)] = (out, share)
         self.soil_xy[(vehicle.path, i)] = (x, y)
         if self.apply_force is not None and out.resistance > 0 and share > 0:
-            f = -out.resistance * share * (1.0 if speed >= 0 else -1.0)
+            f = -out.resistance * share * resistance_scale(speed)
             self.apply_force(vehicle.path, (f * dx, f * dy, f * dz), contact.position)
         soil_mu = self.condition.friction_scale * out.mu(contact.load) / table[table.reference].mu
         return share * soil_mu + (1 - share) * surfaces.peak_mu(table, s, self.condition, speed)
@@ -235,6 +241,7 @@ class SurfaceLayer:
             x, y, yaw = x0 + (x1 - x0) * fraction, y0 + (y1 - y0) * fraction, a0 + da * fraction
             c, s = math.cos(yaw), math.sin(yaw)
             speed = ((x1 - x0) * c + (y1 - y0) * s) / frame_dt
+            sink = self.kinematic_sink[path] = [0.0] * len(offsets)
             for i, (bx, by) in enumerate(offsets):
                 wx, wy = x + bx * c - by * s + ox, y + bx * s + by * c + oy
                 key = (path, i)
@@ -250,13 +257,19 @@ class SurfaceLayer:
                                                                SOIL_SPACING)
                     grid.begin_step()
                     log.info("soil zone %s (%s): grid at %g m", zone.id, sf.cls, SOIL_SPACING)
-                grid.wheel(key, wx, wy, yaw if speed >= 0 else yaw + math.pi, load, radius,
-                           width, abs(speed), abs(speed), dt)
+                sink[i] = grid.wheel(key, wx, wy, yaw if speed >= 0 else yaw + math.pi, load,
+                                     radius, width, abs(speed), abs(speed), dt).sinkage
                 self.soil_xy[key] = (wx, wy)
                 self.driven = True
                 self.saved = False
             if fraction >= 1.0:  # the frame done: without a new pose it stands here
                 self.kinematic[path][0] = (x1, y1, a1)
+
+    def kinematic_sinkage(self, path):
+        """Kinematic vehicle `path`'s wheels' sinkage (m, `set_kinematic`'s wheel order) in the
+        last substep, None when none of them is on soil."""
+        sink = self.kinematic_sink.get(path)
+        return sink if sink is not None and any(sink) else None
 
     def soil_under(self, vehicle):
         """Each wheel's (soil.WheelSoil, share) of the last step, None off soil."""
@@ -354,8 +367,28 @@ class SurfaceLayer:
     def forget(self, vehicle_path):
         self.wheels.pop(vehicle_path, None)
         self.kinematic.pop(vehicle_path, None)
+        self.kinematic_sink.pop(vehicle_path, None)
         self.soil_out = {k: v for k, v in self.soil_out.items() if k[0] != vehicle_path}
         self.soil_xy = {k: v for k, v in self.soil_xy.items() if k[0] != vehicle_path}
+
+
+def resistance_scale(speed):
+    """The signed share of a wheel's soil resistance that acts at body speed `speed` (m/s):
+    -1..1, against the motion, linear below RESIST_V0 (docs/issues/004)."""
+    return max(-1.0, min(1.0, speed / RESIST_V0))
+
+
+def sink_pose(offsets, sinkages, at=(0.0, 0.0)):
+    """How a vehicle body stands on wheels sunk by `sinkages` (m, >= 0) at body-frame
+    `offsets` (x forward, y left): the least-squares plane through the four wheel bottoms, as
+    (dz at body point `at`, pitch, roll) in degrees about the body's y and x axes (right-handed:
+    a positive pitch puts the nose down, a positive roll the left side up)."""
+    import numpy as np
+
+    a = np.array([[1.0, x, y] for x, y in offsets])
+    z0, b, c = np.linalg.lstsq(a, -np.asarray(sinkages, dtype=float), rcond=None)[0]
+    return (float(z0 + b * at[0] + c * at[1]), math.degrees(-math.atan(b)),
+            math.degrees(math.atan(c)))
 
 
 def wheel_points(vehicle, dt):

@@ -42,7 +42,7 @@ from . import motion as body_motion, signals as signal_table, sky as scenario_sk
 from . import vehicle_assets
 from . import walkers as walker_gait
 from .catalogue import check_ego, ego_body, ego_model, load_ego
-from .surface_layer import SurfaceLayer, kinematic_wheels
+from .surface_layer import SurfaceLayer, kinematic_wheels, sink_pose
 
 log = logging.getLogger("swb_isaac_world")
 
@@ -194,6 +194,7 @@ class IsaacWorld(WorldBase):
         self.buried = []  # despawned entities' paths, deleted after the next step
         self.walking = {}  # handle -> a pedestrian's walker: its cycles, SkelAnimation, gait (044 C)
         self.rolling = {}  # handle -> an NPC vehicle's (path, wheels, mass) on the soil (047 S4)
+        self.sunk = {}  # rolling handle -> its body's deepest drop on this pass (052 step 4)
         self.tracked_pose = {}  # handle -> a tracked NPC vehicle's (x, y, yaw) from PhysX
         self.walker_cycles = {}  # walker id -> its cycles, loaded once
         # Catalogue bodies this process has rendered: the first render of one compiles its
@@ -935,6 +936,7 @@ class IsaacWorld(WorldBase):
         self.tracked_pose.pop(handle, None)
         if self.rolling.pop(handle, None) is not None and self.surface is not None:
             self.surface.forget(path)
+        self.sunk.pop(handle, None)
         if ego is None:
             # An entity deleted where it stands stays in the RTX lidar's scene at its last
             # pose (cameras and PhysX queries do not see it): Autoware saw every despawned
@@ -949,6 +951,35 @@ class IsaacWorld(WorldBase):
             return
         self.fresh.discard(handle)
         self.stage.RemovePrim(path)
+
+    def _sink_npcs(self):
+        """An NPC vehicle on the soil stands as deep as its wheels sink (its own and the
+        ruts it rides in): its visible body (`model`, which the cameras and lidars see) drops
+        and tilts to the four wheels' sinkage. Its box stays on the zone's flat ground, so
+        PhysX contacts are as before; the body moves by at most a rut's depth (052 step 4)."""
+        for handle in sorted(self.rolling):
+            path, (offsets, _, _), _ = self.rolling[handle]
+            sink = self.surface.kinematic_sinkage(path)
+            if sink is None and handle not in self.sunk:
+                continue
+            model = self.stage.GetPrimAtPath(f"{path}/model")
+            if not model.IsValid():
+                continue
+            xf = UsdGeom.Xformable(model)
+            ops = xf.GetOrderedXformOps()
+            if len(ops) < 2:
+                ops.append(xf.AddRotateXYZOp())
+            x, y, _ = ops[0].Get()
+            if sink is None:
+                ops[0].Set(Gf.Vec3d(x, y, 0.0))
+                ops[1].Set(Gf.Vec3f(0.0, 0.0, 0.0))
+                log.info("%s off the soil: its body was down %.3f m at most", path,
+                         self.sunk.pop(handle))
+                continue
+            dz, pitch, roll = sink_pose(offsets, sink, (x, y))
+            ops[0].Set(Gf.Vec3d(x, y, dz))
+            ops[1].Set(Gf.Vec3f(roll, pitch, 0.0))
+            self.sunk[handle] = max(self.sunk.get(handle, 0.0), -dz)
 
     def _bury(self):
         """Delete the entities `despawn` moved under the world, now that a step has moved
@@ -1072,6 +1103,7 @@ class IsaacWorld(WorldBase):
             self._collect_contacts(touching)
         if self.surface is not None:
             self.surface.flush()  # the soil's new ruts, for the next frame
+            self._sink_npcs()
         if self.fresh:  # simulated once: PhysX has them now
             self.fresh.clear()
             self.tracked_view = None

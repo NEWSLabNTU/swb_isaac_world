@@ -545,6 +545,31 @@ class KinematicTest(unittest.TestCase):
         self.drive(layer, "/n", 40.0, 40.0, frames=1)  # 30 m in a frame
         self.assertEqual(layer.grids["pit"].depth(25.0, 0.765), 0.0)
 
+    def test_an_npc_stands_in_its_ruts(self):
+        layer = surface_layer.SurfaceLayer(FakeStage({}), smap([self.ZONE]))
+        self.assertIsNone(layer.kinematic_sinkage("/n"))
+        self.drive(layer, "/n", 5.0, 25.0)
+        sink = layer.kinematic_sinkage("/n")
+        self.assertEqual(len(sink), 4)
+        self.assertTrue(all(0.005 < d < 0.2 for d in sink), sink)
+        self.drive(layer, "/n", 70.0, 70.0, frames=1)  # off the soil
+        self.assertIsNone(layer.kinematic_sinkage("/n"))
+
+    def test_the_sunk_body_drops_and_tilts_with_its_wheels(self):
+        offsets, _, _ = surface_layer.kinematic_wheels((4.5, 1.8, 1.5), (0.0, 0.0, 0.7))
+        dz, pitch, roll = surface_layer.sink_pose(offsets, [0.05] * 4)
+        self.assertAlmostEqual(dz, -0.05)
+        self.assertAlmostEqual(pitch, 0.0)
+        self.assertAlmostEqual(roll, 0.0)
+        front_deeper = surface_layer.sink_pose(offsets, [0.1, 0.1, 0.0, 0.0])
+        self.assertAlmostEqual(front_deeper[0], -0.05)
+        self.assertGreater(front_deeper[1], 0.0)  # nose down
+        self.assertAlmostEqual(front_deeper[2], 0.0)
+        right_deeper = surface_layer.sink_pose(offsets, [0.0, 0.1, 0.0, 0.1])  # FL FR RL RR
+        self.assertGreater(right_deeper[2], 0.0)  # left side up
+        self.assertAlmostEqual(surface_layer.sink_pose(offsets, [0.1, 0.1, 0.0, 0.0],
+                                                       at=(offsets[0][0], 0.0))[0], -0.1)
+
     def test_off_the_soil_and_forgotten(self):
         layer = surface_layer.SurfaceLayer(FakeStage({}), smap([self.ZONE]))
         self.drive(layer, "/n", 70.0, 80.0, frames=4)
@@ -553,7 +578,18 @@ class KinematicTest(unittest.TestCase):
         self.drive(layer, "/n", 10.0, 11.0, frames=4)
         self.assertEqual(len(layer.soil_xy), 4)
         layer.forget("/n")
-        self.assertEqual((layer.kinematic, layer.soil_xy), ({}, {}))
+        self.assertEqual((layer.kinematic, layer.soil_xy, layer.kinematic_sink), ({}, {}, {}))
+
+
+class ResistanceScaleTest(unittest.TestCase):
+    """docs/issues/004: the soil's resistance opposes motion, it never pushes a car at rest."""
+
+    def test_none_at_rest_full_when_rolling_against_the_motion(self):
+        f = surface_layer.resistance_scale
+        self.assertEqual(f(0.0), 0.0)
+        self.assertAlmostEqual(f(0.05), 0.5)
+        self.assertAlmostEqual(f(-0.05), -0.5)
+        self.assertEqual((f(0.1), f(3.0), f(-3.0)), (1.0, 1.0, -1.0))
 
 
 class SurfaceLayerTest(unittest.TestCase):

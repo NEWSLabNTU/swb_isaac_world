@@ -1,0 +1,9 @@
+# Roadmap 052 step 2: spikes/step_response.py's ground, 88 m of sand along Town01's road at
+# y -130 (x 236-324, the ego starting at 322 heading -x). Not a scenario's map.
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones:
+  - id: sand_long
+    class: sand
+    soil: grid
+    ground_z: 0.0
+    polygon: [[236.0, -134.4], [324.0, -134.4], [324.0, -128.0], [236.0, -128.0]]
