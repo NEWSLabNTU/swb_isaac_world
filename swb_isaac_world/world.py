@@ -705,7 +705,12 @@ class IsaacWorld(WorldBase):
                     "gait": walker_gait.Gait(cycles["walk"].length, cycles["idle"].length)}
                 self._pose_walker(handle, 0.0)
         elif asset is not None:
-            vehicle_assets.add_npc_body(self.stage, path, asset, center, collider=cube.GetPrim())
+            model = vehicle_assets.add_npc_body(self.stage, path, asset, center,
+                                                collider=cube.GetPrim())
+            if kind == "VEHICLE":
+                # The tilt `_sink_npcs` gives it on soil: authored now, so a frame on the soil
+                # sets values and never adds an op (a structural edit mid-run).
+                UsdGeom.Xformable(model).AddRotateXYZOp().Set(Gf.Vec3f(0.0, 0.0, 0.0))
         elif prop is not None:
             vehicle_assets.add_prop_body(self.stage, path, prop, center, dims,
                                          collider=cube.GetPrim())
@@ -965,10 +970,9 @@ class IsaacWorld(WorldBase):
             model = self.stage.GetPrimAtPath(f"{path}/model")
             if not model.IsValid():
                 continue
-            xf = UsdGeom.Xformable(model)
-            ops = xf.GetOrderedXformOps()
+            ops = UsdGeom.Xformable(model).GetOrderedXformOps()
             if len(ops) < 2:
-                ops.append(xf.AddRotateXYZOp())
+                continue  # no tilt op: not a catalogue car's body (`_spawn`)
             x, y, _ = ops[0].Get()
             if sink is None:
                 ops[0].Set(Gf.Vec3d(x, y, 0.0))
