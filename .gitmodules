@@ -1,8 +1,8 @@
 [submodule "deps/swb_world_protocol"]
 	path = deps/swb_world_protocol
 	url = https://github.com/NEWSLabNTU/swb_world_protocol.git
-	branch = target-shape
+	branch = main
 [submodule "deps/autoware_isaac_bridge"]
 	path = deps/autoware_isaac_bridge
 	url = https://github.com/NEWSLabNTU/autoware_isaac_bridge.git
-	branch = target-shape
+	branch = main
