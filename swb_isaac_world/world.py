@@ -115,11 +115,14 @@ class IsaacWorld(WorldBase):
         return f"Isaac Sim {self.isaac_version}"
 
     def __init__(self, physics_dt=1 / 60, ego_config=None, ego_domain=None, follow=False,
-                 surface_maps=None):
+                 surface_maps=None, record=None):
         """`surface_maps`: `{usd realpath: (surfaces.yaml, map origin)}`
-        (`surface_layer.register`)."""
+        (`surface_layer.register`). `record`: a directory for each scenario's first ego's
+        pictures and soil state (`recorder`), or None."""
         self.isaac_version = _isaac_version()
         self.follow = follow
+        self.record = record
+        self.recorder = None
         self.surface_maps = dict(surface_maps or {})
         self.surface = None  # SurfaceLayer of the loaded world, if it has a surface map
         self.sky = scenario_sky.Sky()  # the scenario's weather and time of day (047)
@@ -661,6 +664,11 @@ class IsaacWorld(WorldBase):
                 ego.after_substep(self.physx, self.dt)
 
             frames = ego.warm_up(warm_step)
+            if self.record and self.recorder is None and handle != WARM_UP_HANDLE:
+                from .recorder import Recorder
+
+                self.recorder = Recorder(self.record, self.stage, ego, self.ego_rig, name,
+                                         self.surface)
             log.info("spawned ego %r as PhysX vehicle %s (box %s at %s); sensors warm after %d "
                      "render(s), %.1f s", name, path, dims, center, frames, time.perf_counter() - t)
             return ego_body(self.ego_rig)
@@ -933,6 +941,9 @@ class IsaacWorld(WorldBase):
         self.by_path.pop(path, None)
         ego = self.egos.pop(handle, None)
         if ego is not None:
+            if self.recorder is not None and self.recorder.ego is ego:
+                self.recorder.close()
+                self.recorder = None
             ego.close()
             if self.surface is not None:
                 self.surface.forget(ego.path)
@@ -1130,6 +1141,8 @@ class IsaacWorld(WorldBase):
             p, r = t["position"], t["rotation"]  # rotation: x, y, z, w
             states.append((handle, ((p[0], p[1], p[2]), (r[3], r[0], r[1], r[2])), None))
         t2 = time.perf_counter()
+        if self.recorder is not None and render:
+            self.recorder.capture(sim_time + substeps * dt, self.surface, self.ego_ros)
         if self.follow and egos:
             self._follow(egos[0])
         end = sim_time + substeps * dt

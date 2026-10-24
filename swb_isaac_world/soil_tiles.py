@@ -30,7 +30,7 @@ import time
 
 import numpy as np
 from aib.isaac.vehicle import GROUPS as AIB_GROUPS
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt
 
 from . import ground_cut, soil
 
@@ -60,8 +60,12 @@ FLAT_GROUP = f"{ROOT}_flatGroup"
 # (on Town01 a car leaving a 10 cm rut onto the road there drew Autoware's emergency stop).
 # The grid keeps the whole ruts.
 FEATHER = 1.0
-# Sand-coloured, so a camera tells the zone from the road.
-COLOR = Gf.Vec3f(0.76, 0.66, 0.48)
+# Each class's colour, so a camera tells the zone from the road and one soil from another
+# (RTX draws a mesh with no material white, whatever its displayColor), and its roughness:
+# wet mud is dark and a little glossy, so its ruts catch the light.
+LOOKS = {"sand": ((0.76, 0.66, 0.48), 0.9), "dirt": ((0.42, 0.31, 0.21), 0.9),
+         "mud_wet": ((0.09, 0.06, 0.035), 0.55), "snow_loose": ((0.92, 0.93, 0.95), 0.6)}
+COLOR = Gf.Vec3f(*LOOKS["sand"][0])
 
 
 def _faces(n):
@@ -237,6 +241,7 @@ class SoilTiles:
         self.tiles = [(tx, ty) for tx in range(lo(x0), hi(x1)) for ty in range(lo(y0), hi(y1))]
         self.tiles_set = set(self.tiles)
         UsdGeom.Scope.Define(stage, self.root)
+        self.look = self._look(zone.cls)
         ox, oy, _ = origin
         txs, tys = [t[0] for t in self.tiles], [t[1] for t in self.tiles]
         self.box = (min(txs) * side - ox, (max(txs) + 1) * side - ox,
@@ -259,6 +264,17 @@ class SoilTiles:
         log.info("soil zone %s: %d tiles of %.1f m at z %.2f", zone.id, len(self.tiles), side,
                  zone.ground_z)
 
+    def _look(self, cls):
+        """The zone's material: a UsdPreviewSurface of its class's colour."""
+        color, roughness = LOOKS.get(cls, LOOKS["sand"])
+        mat = UsdShade.Material.Define(self.stage, f"{self.root}/look")
+        shader = UsdShade.Shader.Define(self.stage, f"{self.root}/look/surface")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*color))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+        mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        return mat
+
     def _name(self, t):
         return f"{t[0]}_{t[1]}".replace("-", "m")
 
@@ -279,6 +295,8 @@ class SoilTiles:
         if not mesh:
             mesh = UsdGeom.Mesh.Define(self.stage, path)
             mesh.CreateDisplayColorAttr([COLOR])
+            mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+            UsdShade.MaterialBindingAPI.Apply(mesh.GetPrim()).Bind(self.look)
         if (n == self.n) != (t in self.full) or not mesh.GetFaceVertexCountsAttr().HasValue():
             idx, cnt = self.faces[n]
             mesh.CreateFaceVertexIndicesAttr().Set(idx)

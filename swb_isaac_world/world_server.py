@@ -78,6 +78,10 @@ def main(argv=None):
     ap.add_argument("--ego-domain", type=int, default=0,
                     help="the ego's ROS domain, over the ego config's (the ego stack's "
                          "ROS_DOMAIN_ID); 0: the config's")
+    ap.add_argument("--record", default="",
+                    help="a directory: each scenario's first ego's dash and wheel pictures "
+                         "and soil state, every rendered frame (`recorder`), for a video; "
+                         "empty: none")
     args = ap.parse_args(argv)
     from swb_world_server import lifetime
     from swb_world_server.server import bind, run
@@ -123,7 +127,8 @@ def main(argv=None):
     from .world import IsaacWorld
 
     world = IsaacWorld(ego_config=args.ego or None, ego_domain=args.ego_domain or None,
-                       follow=bool(args.display and args.follow), surface_maps=surface_maps)
+                       follow=bool(args.display and args.follow), surface_maps=surface_maps,
+                       record=args.record or None)
     # The first listed is preloaded last, so it is the one loaded when the bridge first asks.
     for usd in reversed(preload):
         world.preload(usd)

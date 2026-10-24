@@ -7,7 +7,7 @@
 
     play_launch launch FLAGS \
         swb_isaac_world swb_isaac_world.launch.xml [ego:=default|none|<yaml>] \
-        [world:=<world>[,<world>...]] [follow:=true] [render:=auto|window|headless]
+        [world:=<world>[,<world>...]] [follow:=true] [render:=auto|window|headless] [record:=<dir>]
 
     FLAGS are the play_launch options web-addr 127.0.0.1:<SWB_WEB_PORT+5> (8085) and log-dir play_log/isaac
     (each with a double-hyphen prefix, which an XML comment cannot contain); `just isaac-world`
@@ -31,6 +31,8 @@
        description="worlds to preload, comma separated: world files (map/isaac/world.yaml), map directories or USD files; the first stays loaded; none: nothing"/>
   <arg name="follow" default="false"
        description="true: with a window, no UI and a viewport chasing the ego"/>
+  <arg name="record" default=""
+       description="a directory for each scenario's first ego's dash and wheel pictures and soil state (a video's); empty: none"/>
   <arg name="render" default="auto"
        description="auto (a window on DISPLAY when set, unless ISAAC_HEADLESS=1) | window | headless"/>
 
@@ -38,5 +40,5 @@
        lets the dead server's GPU memory and port go before the next one claims them. -->
   <node pkg="swb_isaac_world" exec="swb_isaac_world_server" name="swb_isaac_world" output="screen"
         respawn="true" respawn_delay="10.0"
-        args="--port $(env ISAAC_PORT 5590) --ego $(var ego) --ego-domain $(env EGO_ROS_DOMAIN_ID 1) --world $(var world) --follow $(var follow) --render $(var render)"/>
+        args="--port $(env ISAAC_PORT 5590) --ego $(var ego) --ego-domain $(env EGO_ROS_DOMAIN_ID 1) --world $(var world) --follow $(var follow) --render $(var render) --record=$(var record)"/>
 </launch>
