@@ -18,6 +18,10 @@ build:
 test:
     python3 -m unittest discover -s test
 
+# The tests, then pyflakes
+check: test
+    python3 -m pyflakes swb_isaac_world test scripts
+
 # Autoware's message bindings for Isaac's Python (once per Isaac install)
 msgs:
     ISAAC_ROOT={{isaac_root}} scripts/build_msgs.sh

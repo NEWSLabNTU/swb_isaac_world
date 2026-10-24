@@ -1,6 +1,7 @@
 """The soil layer's wheel models (047 S3): the survey's trends, on the shipped class table's
 sand and sandy loam, for aib's default wheel (0.37 m radius, 0.235 m wide)."""
 import math
+import importlib
 import sys
 import unittest
 from pathlib import Path
@@ -236,7 +237,7 @@ class GridTest(unittest.TestCase):
 
 
 try:
-    from swb_isaac_world import soil_warp  # noqa: F401 -- Isaac's Python has warp
+    importlib.import_module("swb_isaac_world.soil_warp")  # Isaac's Python has warp
     HAVE_WARP = True
 except ImportError:
     HAVE_WARP = False

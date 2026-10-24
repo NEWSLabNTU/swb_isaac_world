@@ -24,7 +24,6 @@ is IK, which `swb_isaac_world.rider` does offline); CARLA has no seated sequence
 (`PedestrianOnSidecar` has no skeleton at all)."""
 import json
 import os
-import sys
 
 import unreal
 
@@ -216,7 +215,7 @@ def vehicles():
             entry["base_type"] = p.get_editor_property("base_type")
             entry["object_type"] = p.get_editor_property("object_type")
             entry["generation"] = p.get_editor_property("generation")
-        except Exception as e:  # noqa
+        except Exception:  # an older editor lacks these properties
             pass
         if cls is None:
             meta.append(entry)

@@ -40,7 +40,7 @@ def stats(c, i, t0, t1):
 
 
 for label in LABELS:
-    lines = [f"| test | quantity | window s | CARLA mean | Isaac mean | max abs diff | max diff / CARLA peak |",
+    lines = ["| test | quantity | window s | CARLA mean | Isaac mean | max abs diff | max diff / CARLA peak |",
              "|---|---|---|---|---|---|---|"]
     for test, WHAT, t0, t1 in WINDOWS:
         c = load(OUT / f"carla_{test}.csv")
