@@ -1,0 +1,13 @@
+# spikes/limit_mud.py's ground: 50 m of wet mud along Town01's road at y -130 (x 150-200),
+# from the road's south edge (widened to y -135 so a wheel 0.8 m from the curb is fully in) to
+# y -129.3, just short of the road's centre. An ego in the south lane (y -132.6) has all four
+# wheels in mud; one at y -129.85 has its left wheels in mud and its right wheels on asphalt.
+# Not a scenario's map.
+allow_unvalidated: [mud_wet]
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones:
+  - id: mud_limit
+    class: mud_wet
+    soil: grid
+    ground_z: 0.0
+    polygon: [[150.0, -135.0], [200.0, -135.0], [200.0, -129.3], [150.0, -129.3]]
