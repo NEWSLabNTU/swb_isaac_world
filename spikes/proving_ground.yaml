@@ -1,0 +1,24 @@
+# spikes/manoeuvres.py's ground (roadmap 054 step 2): its flat proving ground (660 x 560 m of
+# Road, x -100..560, y -40..520) in four pads along x, each 120 m wide, the car's lane 15 m in
+# from a pad's lower edge, heading +x. Dry asphalt (lane y 15) is the ground's own class; wet
+# asphalt (lane y 135) and wet mud (lane y 255) are zones from x 80 on; the split pad (lane
+# y 375) has mud from y 374.7 up, so the left wheels are fully in it and the right wheels on
+# asphalt. Mud is the soil grid with no `ground_z`: the soil's forces and its ruts' memory, the
+# wheels on the flat ground (no render tiles or plates, which a pad this size would need 10^4
+# of). The closed-form wheel, tried first, meets fresh soil at every wheel and every step and
+# held the car to 26 km/h at 3 m/s^2 asked. Not a scenario's map.
+allow_unvalidated: [mud_wet]
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones:
+  - id: wet_pad
+    class: asphalt
+    wetness: wetWithPuddles
+    polygon: [[80.0, 120.0], [560.0, 120.0], [560.0, 240.0], [80.0, 240.0]]
+  - id: mud_pad
+    class: mud_wet
+    soil: grid
+    polygon: [[80.0, 240.0], [560.0, 240.0], [560.0, 360.0], [80.0, 360.0]]
+  - id: split_pad
+    class: mud_wet
+    soil: grid
+    polygon: [[80.0, 374.7], [560.0, 374.7], [560.0, 480.0], [80.0, 480.0]]
