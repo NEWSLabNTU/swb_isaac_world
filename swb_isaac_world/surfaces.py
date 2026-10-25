@@ -39,8 +39,17 @@ A wheel's friction, every physics step (`WheelSurfaces`):
     mu = tire_friction * friction_scale * mu_class * wet_class(wetness) * f_hydroplane(v, depth)
          / mu_reference
 
-filtered over `blend_length` of travel, then shaped by the class's slip curve. On dry
-reference ground (asphalt) that is the rig's own tire_friction.
+filtered over `blend_length` of travel: the class's peak. Then the tire (054 T1): PhysX's tire
+builds force at its stiffness and saturates at friction x load near a slip of
+2.3 mu F_z / C, flat beyond (054 step 4a). Per class, `peak_slip` and `peak_slip_angle` say
+where the peak should be (absent: the rig's own), and each wheel's stiffness is scaled so
+PhysX's lands there (`WheelSurfaces.stiffness`). Past the peak the friction written falls
+with the combined slip rho = |(kappa / kappa_peak, tan alpha / tan alpha_peak)|, in both
+directions, toward the class's `sliding` share: g = sliding + (1 - sliding) / rho, lowered
+further with the sliding speed by an optional `stribeck`, and lagged over the class's
+`relaxation` length of travel. The value written divides out the rig's friction-vs-slip graph,
+which PhysX applies on top. Below the peak on dry reference ground (asphalt) that is the rig's
+own tire_friction and stiffness.
 
     python -m swb_isaac_world.surfaces check <map dir | surfaces.yaml>
     python -m swb_isaac_world.surfaces plot <map dir | surfaces.yaml> [-o out.png]
@@ -100,10 +109,20 @@ class SurfaceClass:
     name: str
     mu: float
     wet: tuple  # factor per WETNESS level
-    slip: tuple = None  # ((0, f0), (s_peak, 1), (1, f_lock)), or None: the vehicle's
     hydroplaning: bool = False
     soil: object = None  # soil.SoilParams: the class can be a soil zone's (047 S3)
     unvalidated: str = None  # why its soil parameters are a stand-in (047 D6), or None
+    peak_slip: float = None  # longitudinal slip at the tire's peak; None: the rig's
+    peak_slip_angle: float = None  # rad, the slip angle at the peak; None: the rig's
+    sliding: float = 1.0  # the friction past the peak, sliding, as a share of the peak's
+    relaxation: float = 0.0  # m of travel the drop past the peak lags by; 0: none
+    stribeck: object = None  # Stribeck: the sliding share falling with sliding speed
+
+
+@dataclass(frozen=True)
+class Stribeck:
+    speed: float  # m/s, the sliding speed the drop is spread over
+    sliding: float  # the sliding share at high sliding speed
 
 
 @dataclass(frozen=True)
@@ -132,16 +151,34 @@ class ClassTable:
         return self.classes[name]
 
 
-def _graph(pts, where, problems):
-    try:
-        g = tuple((float(x), float(y)) for x, y in pts)
-    except (TypeError, ValueError):
-        problems.append(f"{where}: not a list of [slip, friction] pairs")
+def _number(c, key, where, problems, lo, hi, default=None):
+    v = c.get(key, default)
+    if v is None:
         return None
-    if len(g) != 3 or not (0.0 <= g[0][0] < g[1][0] < g[2][0]):
-        problems.append(f"{where}: three points of rising slip, as PhysX's frictionVsSlipGraph")
-        return None
-    return g
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not lo <= v <= hi:
+        problems.append(f"{where}: {key} must be a number in [{lo}, {hi}]")
+        return default
+    return float(v)
+
+
+def _tire(c, where, problems):
+    """A class's tire curve (054 T1): SurfaceClass's peak_slip, peak_slip_angle (degrees in
+    the table), sliding, relaxation and stribeck."""
+    out = {"peak_slip": _number(c, "peak_slip", where, problems, 0.01, 1.0),
+           "sliding": _number(c, "sliding", where, problems, 0.05, 1.5, 1.0),
+           "relaxation": _number(c, "relaxation", where, problems, 0.0, 10.0, 0.0)}
+    angle = _number(c, "peak_slip_angle", where, problems, 0.5, 45.0)
+    out["peak_slip_angle"] = None if angle is None else math.radians(angle)
+    st = c.get("stribeck")
+    if st is not None:
+        if not isinstance(st, dict) or set(st) != {"speed", "sliding"}:
+            problems.append(f"{where}: stribeck is {{speed: m/s, sliding: share}}")
+        else:
+            speed = _number(st, "speed", f"{where}: stribeck", problems, 0.01, 100.0)
+            share = _number(st, "sliding", f"{where}: stribeck", problems, 0.05, 1.5)
+            if speed is not None and share is not None:
+                out["stribeck"] = Stribeck(speed, share)
+    return out
 
 
 def parse_classes(data, where="classes"):
@@ -162,8 +199,10 @@ def parse_classes(data, where="classes"):
         for level in WETNESS:
             last = float(wet_in.get(level, last if level != "dry" else 1.0))
             wet.append(last)
-        slip = _graph(c["slip"], f"{where}: class {name}: slip", problems) \
-            if c.get("slip") is not None else None
+        if "slip" in c:
+            problems.append(f"{where}: class {name}: `slip` is gone (054 T1): the tire's curve "
+                            f"is peak_slip, peak_slip_angle, sliding, relaxation and stribeck")
+        tire = _tire(c, f"{where}: class {name}", problems)
         params = None
         if c.get("soil") is not None:
             try:
@@ -174,8 +213,9 @@ def parse_classes(data, where="classes"):
         if unvalidated is not None and (not isinstance(unvalidated, str) or not unvalidated):
             problems.append(f"{where}: class {name}: unvalidated is the reason, a string")
             unvalidated = None
-        classes[name] = SurfaceClass(name, float(c["mu"]), tuple(wet), slip,
-                                     bool(c.get("hydroplaning", False)), params, unvalidated)
+        classes[name] = SurfaceClass(name, float(c["mu"]), tuple(wet),
+                                     bool(c.get("hydroplaning", False)), params, unvalidated,
+                                     **tire)
     reference = data.get("reference", "asphalt")
     if reference not in classes:
         problems.append(f"{where}: reference class {reference!r} is not in the table")
@@ -633,45 +673,85 @@ def graph_at(graph, slip):
     return y2
 
 
-class WheelSurfaces:
-    """One vehicle's wheels on a surface map: what each wheel's friction value should be for
-    the next physics step. `tire_friction` and `vehicle_graph` are the rig's."""
+def sliding_share(c: SurfaceClass, sliding_speed):
+    """Class `c`'s friction when sliding, as a share of its peak, at `sliding_speed` (m/s)."""
+    if c.stribeck is None:
+        return c.sliding
+    fast = c.stribeck.sliding
+    return fast + (c.sliding - fast) * math.exp(-(sliding_speed / c.stribeck.speed) ** 2)
 
-    def __init__(self, surface_map: SurfaceMap, tire_friction, vehicle_graph, wheels=4):
+
+def past_peak(rho, sliding):
+    """The friction at combined slip `rho` (1 at the peak) as a share of the peak's."""
+    return 1.0 if rho <= 1.0 else sliding + (1.0 - sliding) / rho
+
+
+# Below this speed (m/s) the drop past the peak is not lagged (its time constant, the
+# relaxation length over the speed, would hold it for ever at rest).
+LAG_MIN_SPEED = 1.0
+
+
+class WheelSurfaces:
+    """One vehicle's wheels on a surface map: what each wheel's friction value and stiffness
+    should be for the next physics step. `tire_friction` and `vehicle_graph` are the rig's;
+    `rig_peaks` its tire's (longitudinal slip, tan slip angle) at the peak at friction 1.0
+    (`surface_layer.rig_peaks`)."""
+
+    def __init__(self, surface_map: SurfaceMap, tire_friction, vehicle_graph, rig_peaks,
+                 wheels=4):
         self.map = surface_map
         self.tire_friction = tire_friction
         self.vehicle_graph = tuple(tuple(p) for p in vehicle_graph)
+        self.rig_peaks = tuple(rig_peaks)
         self.n = wheels
         self.reset()
 
     def reset(self):
         """Forget the filters (a teleport): the next update snaps to the ground."""
-        self.mu = [None] * self.n
+        self.mu = [None] * self.n  # the blended peak, relative to dry reference ground
+        self.peaks = [None] * self.n  # the blended (kappa, tan alpha) at the peak
+        self.g = [1.0] * self.n  # the lagged share of the peak past it
+        self.stiffness = [(1.0, 1.0)] * self.n  # (lateral, longitudinal), shares of the rig's
         self.surfaces = [None] * self.n
 
+    def class_peaks(self, c: SurfaceClass):
+        """Class `c`'s (kappa, tan alpha) at the peak: its own, or the rig's at its friction."""
+        k_rig, t_rig = (p * self.tire_friction for p in self.rig_peaks)
+        return (c.peak_slip if c.peak_slip is not None else k_rig,
+                math.tan(c.peak_slip_angle) if c.peak_slip_angle is not None else t_rig)
+
     def update(self, i, surface: Surface, condition: RoadCondition, speed, slip, dt,
-               target=None):
+               target=None, slip_angle=0.0):
         """Wheel `i` on `surface` (None: in the air, kept as it was) at forward `speed`
-        (m/s) with longitudinal `slip` after a step of `dt` s: its friction value. `target`,
-        relative to dry reference ground, replaces the surface's peak friction (the soil
-        layer's, in a soil zone)."""
+        (m/s) with longitudinal `slip` and `slip_angle` (rad) after a step of `dt` s: its
+        friction value; `stiffness[i]` its tire's. `target`, relative to dry reference
+        ground, replaces the surface's peak friction (the soil layer's, in a soil zone)."""
         if surface is None:
             surface = self.surfaces[i]
             if surface is None:
                 return self.tire_friction
+        c = self.map.table[surface.cls]
         if target is None:
             target = peak_mu(self.map.table, surface, condition, speed)
+        peaks = self.class_peaks(c)
         if self.mu[i] is None:
-            self.mu[i] = target
+            self.mu[i], self.peaks[i] = target, peaks
         else:
             k = min(1.0, abs(speed) * dt / max(self.map.table.blend_length, 1e-6))
             self.mu[i] += (target - self.mu[i]) * k
+            self.peaks[i] = tuple(a + (b - a) * k for a, b in zip(self.peaks[i], peaks))
         self.surfaces[i] = surface
-        mu = self.tire_friction * self.mu[i]
-        graph = self.map.table[surface.cls].slip
-        if graph is not None:
-            mu *= graph_at(graph, slip) / max(graph_at(self.vehicle_graph, slip), 1e-6)
-        return mu
+        mu_peak = self.tire_friction * self.mu[i]
+        kp, tp = self.peaks[i]
+        # PhysX's peak is where 2.3 mu F_z / C meets the class's: C scaled by mu over the peak
+        self.stiffness[i] = (self.rig_peaks[1] * mu_peak / tp, self.rig_peaks[0] * mu_peak / kp)
+        t = math.tan(slip_angle)
+        rho = math.hypot(slip / kp, t / tp)
+        g = past_peak(rho, sliding_share(c, abs(speed) * math.hypot(slip, t)))
+        if c.relaxation > 0 and abs(speed) >= LAG_MIN_SPEED:
+            g = self.g[i] + (g - self.g[i]) * min(1.0, abs(speed) * dt / c.relaxation)
+        self.g[i] = g
+        return mu_peak * g / max(graph_at(self.vehicle_graph, slip), 1e-6)
 
 
 # --- Check and plot ------------------------------------------------------------------------

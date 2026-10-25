@@ -27,6 +27,16 @@ up on dry asphalt from x -80, heading +x, and runs the manoeuvre from x 100, ins
   25 m), driven by a pure-pursuit driver at 80 km/h (40 on mud), speed held.
 - circle: ISO 4138's constant radius: a 40 m circle to the left, the pure-pursuit driver on
   it, the speed raised 0.15 m/s^2 from 5 m/s until the car leaves the circle by 4 m.
+- sweep_lat: the tire's curve sideways (054 step 4b): from 10 m/s, speed held, the tire angle
+  ramped from 0 to 35 deg to the left at 5 deg/s; the front axle saturates and its slip
+  angle keeps growing with the steering.
+- sweep_long: the tire's curve lengthways: from 40 km/h (30 on mud), ABS off, the
+  deceleration asked ramped from 0 to 15 m/s^2 (past what any ground gives) over 1 s,
+  steering straight: the wheels lock.
+
+The sweeps keep each wheel's tire force, slips, load and the surface layer's stiffness and
+share of the peak (`tires` in a row), and summarise each axle's curve: the most force over load
+and the slip where it was, and the force over load at the largest slip (past the peak).
 
 The driver and the inputs are fixed, so the numbers compare one model with another (054
 steps 3-5), not with a real Model 3; the kinematic references use the rig's wheel base.
@@ -68,7 +78,9 @@ EXTENT = (-100.0, 560.0, -40.0, 520.0)  # the ground's x0, x1, y0, y1
 GRID = 10.0
 LANES = {"dry": 15.0, "wet": 135.0, "mud": 255.0, "split": 375.0}
 X_SPAWN, X_TRIGGER = -80.0, 100.0
-MANOEUVRES = ("brake", "step", "brake_turn", "sine", "dlc", "circle")
+MANOEUVRES = ("brake", "step", "brake_turn", "sine", "dlc", "circle", "sweep_lat", "sweep_long")
+STEER_RATE, STEER_MAX = math.radians(5.0), math.radians(35.0)
+BRAKE_RAMP, BRAKE_MAX = 1.0, 15.0
 RADIUS = 40.0
 X_CIRCLE = 160.0
 
@@ -151,11 +163,17 @@ surface = world.surface
 handle = [100]
 
 
-def spawn(y):
+def spawn(y, abs_off=False):
+    if abs_off:
+        rig = world.ego_rig
+        world.ego_rig = dataclasses.replace(rig, ecu=dataclasses.replace(rig.ecu,
+                                                                         abs_enabled=False))
     handle[0] += 1
     world.spawn(handle[0], "ego", "EGO", "", (1.5, 0.0, 0.9), (4.8, 2.1, 1.5),
                 ((X_SPAWN, y, 0.3), (1.0, 0.0, 0.0, 0.0)))  # heading +x
     ego = world.egos[handle[0]]
+    if abs_off:
+        world.ego_rig = rig
     if TRUTH:
         ego.vehicle.ecu.estimator = TruthEstimator(ego)
     cmd = copy.copy(ego.ros.cmd)
@@ -220,10 +238,26 @@ def sine_angle(tm, amp):
 def speeds(pad, kind):
     mud = pad in ("mud", "split")
     return {"brake": 40, "step": 40, "brake_turn": 40, "sine": 50 if mud else 80,
-            "dlc": 40 if mud else 80, "circle": 5 * 3.6}[kind] / 3.6
+            "dlc": 40 if mud else 80, "circle": 5 * 3.6, "sweep_lat": 10 * 3.6,
+            "sweep_long": 30 if mud else 40}[kind] / 3.6
 
 
-def row(t, phase, ego, cmd, yaw_u):
+def tires(v, ws, cp):
+    """Each wheel's tire: PhysX's force (along, across), slips, load, the surface layer's
+    stiffness shares and share of the peak (054 T1)."""
+    out = []
+    for i, w in enumerate(v.wheel_states or ()):
+        c = cp[i] if cp else None
+        out.append({"fx": round(w.force[0], 1), "fy": round(w.force[1], 1),
+                    "fz": round(c.load, 1) if c and c.on_ground else 0.0,
+                    "kappa": round(w.slip, 4), "alpha": round(w.slip_angle, 4),
+                    "friction": round(v.friction_values[i], 4),
+                    "stiffness": [round(x, 3) for x in ws.stiffness[i]] if ws else None,
+                    "g": round(ws.g[i], 3) if ws else None})
+    return out
+
+
+def row(t, phase, ego, cmd, yaw_u, sweep=False):
     s, v = ego.state, ego.vehicle
     vx, vy = s.velocity[0], s.velocity[1]
     ws = surface.wheels.get(v.path) if surface is not None else None
@@ -245,7 +279,8 @@ def row(t, phase, ego, cmd, yaw_u):
             if ws is not None else None,
             "slip": [round(w.slip, 3) for w in v.wheel_states] if v.wheel_states else None,
             "cls": [None if ws is None or g is None else g.cls for g in ws.surfaces]
-            if ws is not None else None}
+            if ws is not None else None,
+            "tires": tires(v, ws, v.contacts) if sweep else None}
 
 
 def run(pad, kind):
@@ -253,7 +288,7 @@ def run(pad, kind):
     y0 = LANES[pad]
     if surface is not None:
         surface.fresh_soil()
-    ego, cmd = spawn(y0)
+    ego, cmd = spawn(y0, abs_off=kind == "sweep_long")
     v_go = speeds(pad, kind)
     amp = 6.5 * math.atan(L * 0.3 * G / (v_go * v_go))
     rows, t, t_go = [], 0.0, None
@@ -302,6 +337,14 @@ def run(pad, kind):
                 s_ahead = x + look - trigger
                 cmd.tire_angle = pursue(x, y, yaw_u, x + look, y0 + dlc_offset(s_ahead))
                 done = x - trigger > 130.0
+            elif kind == "sweep_lat":
+                hold(cmd, v, v_go)
+                cmd.tire_angle = min(STEER_MAX, STEER_RATE * tm)
+                done = tm > STEER_MAX / STEER_RATE + 1.0
+            elif kind == "sweep_long":
+                cmd.acceleration = -BRAKE_MAX * min(1.0, tm / BRAKE_RAMP)
+                cmd.velocity, cmd.tire_angle = 0.0, 0.0
+                done = abs(v) < 1.0
             else:  # circle
                 hold(cmd, v, 5.0 + 0.15 * tm)
                 cx, cy = X_CIRCLE, y0 + RADIUS
@@ -314,7 +357,7 @@ def run(pad, kind):
                 break
         world.step({}, SUBSTEPS, DT, False, sim_time=t)
         t += FRAME
-        rows.append(row(t, phase, ego, cmd, yaw_u))
+        rows.append(row(t, phase, ego, cmd, yaw_u, kind.startswith("sweep")))
     world.despawn(handle[0])
     for _ in range(5):
         world.step({}, SUBSTEPS, DT, False)
@@ -401,6 +444,21 @@ def summarise(pad, kind, m, v_go, amp, y0):
             best = max(best, min(held[i:i + win]))
         out.update(understeer_deg_per_g=k and round(k, 2), ay_max_held=round(best, 2),
                    end_speed_kmh=round(3.6 * last["vx"], 1))
+    if kind.startswith("sweep"):
+        key, force = ("alpha", "fy") if kind == "sweep_lat" else ("kappa", "fx")
+        for axle, wheels in (("front", (0, 1)), ("rear", (2, 3))):
+            pts = [(abs(w[key]), abs(w[force]) / w["fz"], w["stiffness"]) for r in m
+                   if r["tires"] for i in wheels for w in (r["tires"][i],) if w["fz"] > 500]
+            if not pts:
+                continue
+            top, far = max(pts, key=lambda p: p[1]), max(pts, key=lambda p: p[0])
+            slip = (lambda x: round(math.degrees(x), 2)) if kind == "sweep_lat" \
+                else (lambda x: round(x, 3))
+            out[axle] = {"peak_force_over_load": round(top[1], 3), "at_slip": slip(top[0]),
+                         "largest_slip": slip(far[0]),
+                         "force_over_load_there": round(far[1], 3),
+                         "share_of_peak_there": round(far[1] / top[1], 3) if top[1] else None,
+                         "stiffness": top[2]}
     return out
 
 

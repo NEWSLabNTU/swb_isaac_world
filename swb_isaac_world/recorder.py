@@ -207,8 +207,10 @@ class Recorder:
                     wheel["zone"] = g.zone
             if ws is not None and ws.mu[i] is not None:
                 wheel["mu"] = round(ws.mu[i], 3)
+                wheel["of_peak"] = round(ws.g[i], 3)  # past the tire's peak (054 T1)
             if v.wheel_states is not None:
                 wheel["slip"] = round(v.wheel_states[i].slip, 3)
+                wheel["slip_angle_deg"] = round(math.degrees(v.wheel_states[i].slip_angle), 2)
             if est.get("slip"):
                 wheel["slip_est"] = round(est["slip"][i], 3)
             out = surface.soil_out.get((v.path, i)) if surface is not None else None

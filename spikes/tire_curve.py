@@ -3,7 +3,7 @@ step 4a).
 
     ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/tire_curve.py \\
         [<out dir>]
-    # CASES=dry,dry035,mud: only these; prints one SPIKE-RESULT json; each case's frames go to
+    # CASES=dry,dry035,mud: only these; NO_STIFFNESS=1: T1's stiffness not written; prints one SPIKE-RESULT json; each case's frames go to
     # <out dir>/<case>_<sweep>.jsonl, one row per frame with every wheel's PhysX state
 
 T1's design (054, "T1 in detail") rests on PhysX's default tire building force linearly with
@@ -94,6 +94,8 @@ def spawn(case):
     world.spawn(handle[0], "ego", "EGO", "", (1.5, 0.0, 0.9), (4.8, 2.1, 1.5),
                 ((X_SPAWN, LANES[case], 0.3), (1.0, 0.0, 0.0, 0.0)))  # heading +x
     ego = world.egos[handle[0]]
+    if os.environ.get("NO_STIFFNESS"):  # a diagnosis: T1's friction without its stiffness
+        ego.vehicle.set_wheel_stiffness = lambda i, lateral, longitudinal: None
     cmd = copy.copy(ego.ros.cmd)
 
     def before_substep(dt, e=ego, c=cmd):
@@ -161,7 +163,12 @@ def run(case, sweep):
         t += FRAME
         if t_go is not None:
             s = ego.state
-            rows.append({"tm": round(t - t_go, 3), "v": round(s.velocity[0], 3),
+            so = world.surface.soil_under(ego.vehicle) if world.surface else []
+            soil = [None if x is None else {"sink": round(x[0].sinkage, 4),
+                                            "limit": round(x[0].traction_limit, 1),
+                                            "load": round(x[0].load, 1), "share": round(x[1], 3)}
+                    for x in so]
+            rows.append({"soil": soil, "tm": round(t - t_go, 3), "v": round(s.velocity[0], 3),
                          "vy": round(s.velocity[1], 3), "r": round(s.angular_velocity[2], 4),
                          "tire": round(s.tire_angle, 4), "w": wheels(ego)})
     world.despawn(handle[0])

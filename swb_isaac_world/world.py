@@ -268,8 +268,10 @@ class IsaacWorld(WorldBase):
         self._load_surfaces(usd)
 
     def _load_surfaces(self, usd):
-        """The world's surface map, read again at every load (an edit needs no restart)."""
-        self.surface = None
+        """The world's surface map, read again at every load (an edit needs no restart); a
+        world without one gets the empty map, every wheel on the reference class (054 T1: the
+        tire's curve is the class's on any ground)."""
+        self.surface = self._no_map()
         entry = self.surface_maps.get(usd)
         if entry is None:
             return
@@ -322,16 +324,15 @@ class IsaacWorld(WorldBase):
         """`ROAD_CONDITION` (047 S2): the scenario's road state on the surface layer. A world
         with no surface map gets one for a condition that changes something: every label
         the reference class, no zones (so a zone property is refused)."""
-        layer = self.surface
-        if layer is None:
-            empty = surfaces.parse({}, surfaces.NO_MAP)
-            # Checked even when nothing changes, so a zone property is refused alike.
-            condition, _ = surfaces.road_condition(empty, friction_scale, wetness, properties)
-            if condition == surfaces.RoadCondition():
-                return
-            layer = SurfaceLayer(self.stage, empty, apply_force=self._apply_force)
-        layer.set_condition(friction_scale, wetness, properties)
-        self.surface = layer
+        if self.surface is None:
+            self.surface = self._no_map()
+        self.surface.set_condition(friction_scale, wetness, properties)
+
+    def _no_map(self):
+        """The surface layer of a world without a surface map: every label the reference
+        class, no zones (so a zone property is refused)."""
+        return SurfaceLayer(self.stage, surfaces.parse({}, surfaces.NO_MAP),
+                            apply_force=self._apply_force)
 
     def reset(self, handles):
         """A new owner, or a release: the entities go, the road goes back to the map's, the sky
@@ -339,12 +340,9 @@ class IsaacWorld(WorldBase):
         super().reset(handles)
         self._reset_sky()
         if self.surface is not None:
-            if self.surface.base.path == surfaces.NO_MAP:
-                self.surface = None
-            else:
-                self._save_ruts()
-                self.surface.set_condition()
-                self.surface.fresh_soil()
+            self._save_ruts()
+            self.surface.set_condition()
+            self.surface.fresh_soil()
 
     # --- The scenario's weather and time of day (047; `sky`) ------------------------------
 

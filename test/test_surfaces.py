@@ -16,6 +16,8 @@ from swb_isaac_world.surfaces import RoadCondition, Surface, SurfaceError  # noq
 TABLE = surfaces.load_classes()
 SQUARE = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
 VEHICLE_GRAPH = ((0.0, 1.0), (0.1, 1.0), (1.0, 0.8))  # aib's default
+RIG = SimpleNamespace(mass=1760.0, lat_stiff_value=17.0, long_stiff_value=4612.5)
+RIG_PEAKS = surface_layer.rig_peaks(RIG)  # about (0.24, tan 8.6 deg)
 
 
 def smap(zones=(), defaults=None, **kw):
@@ -48,9 +50,11 @@ class ClassTableTest(unittest.TestCase):
         with self.assertRaises(SurfaceError) as cm:
             surfaces.parse_classes({"reference": "tarmac", "classes": {
                 "a": {"mu": 0}, "b": {"mu": 0.5, "slip": [[0, 1], [1, 1]]},
-                "c": {"mu": 0.5, "wet": {"soaked": 0.5}}}})
+                "c": {"mu": 0.5, "wet": {"soaked": 0.5}},
+                "d": {"mu": 0.5, "sliding": 0.0, "stribeck": {"speed": 1.0}}}})
         msg = str(cm.exception)
-        for part in ("class a", "class b: slip", "soaked", "tarmac"):
+        for part in ("class a", "class b: `slip` is gone", "soaked", "tarmac",
+                     "class d: sliding", "class d: stribeck"):
             self.assertIn(part, msg)
 
 
@@ -169,7 +173,7 @@ class RutsTest(unittest.TestCase):
             v.contacts = [SimpleNamespace(on_ground=True, position=(x, y, 0.0), shape="",
                                           load=4500.0, direction=(1.0, 0.0, 0.0))
                           for y in (-0.8, 0.8)] * 2
-            v.wheel_states = [SimpleNamespace(slip=0.2, rotation_speed=5.0 / 0.8 / 0.37)] * 4
+            v.wheel_states = [SimpleNamespace(slip=0.2, slip_angle=0.0, rotation_speed=5.0 / 0.8 / 0.37)] * 4
             layer.begin_step()
             layer.update(v, 5.0, 1 / 60)
             x += 5.0 / 60
@@ -342,28 +346,88 @@ class FrictionTest(unittest.TestCase):
 
 
 class WheelSurfacesTest(unittest.TestCase):
-    def wheels(self, m=None):
-        return surfaces.WheelSurfaces(m or smap(), 1.0, VEHICLE_GRAPH)
+    def wheels(self, m=None, tire_friction=1.0):
+        return surfaces.WheelSurfaces(m or smap(), tire_friction, VEHICLE_GRAPH, RIG_PEAKS)
 
-    def test_dry_asphalt_keeps_the_rigs_tire_friction_at_any_slip(self):
-        ws = surfaces.WheelSurfaces(smap(), 1.3, VEHICLE_GRAPH)
-        for slip in (0.0, 0.05, -0.7, 1.0):
-            self.assertAlmostEqual(ws.update(0, Surface("asphalt"), RoadCondition(), 20, slip,
-                                             1 / 60), 1.3)
+    def test_the_rig_peaks_are_spike_4as(self):
+        kappa, tan_alpha = RIG_PEAKS
+        self.assertAlmostEqual(kappa, 0.244, delta=0.005)
+        self.assertAlmostEqual(math.degrees(math.atan(tan_alpha)), 8.55, delta=0.1)
+
+    def test_dry_asphalt_below_the_peak_is_the_rigs_tire(self):
+        ws = self.wheels(tire_friction=1.3)
+        for slip, angle in ((0.0, 0.0), (0.05, 0.0), (-0.2, 0.02), (0.0, -0.1)):
+            mu = ws.update(0, Surface("asphalt"), RoadCondition(), 20, slip, 1 / 60, None, angle)
+            self.assertAlmostEqual(mu * surfaces.graph_at(VEHICLE_GRAPH, slip), 1.3)
+            self.assertEqual(ws.stiffness[0], (1.0, 1.0))
+
+    def test_past_the_peak_it_falls_toward_the_sliding_share_both_ways(self):
+        c = TABLE["mud_wet"]
+        ws = self.wheels()
+        s, cond = Surface("mud_wet"), RoadCondition()
+        ws.update(0, s, cond, 10.0, 0.0, 1 / 60)
+        peak = ws.mu[0]
+        kp, tp = ws.class_peaks(c)
+        for _ in range(600):  # 100 m: the relaxation lag long done
+            sideways = ws.update(0, s, cond, 10.0, 0.0, 1 / 60, None, math.atan(3 * tp))
+        self.assertAlmostEqual(sideways, peak * (c.sliding + (1 - c.sliding) / 3), places=6)
+        for _ in range(600):
+            locked = ws.update(0, s, cond, 10.0, -1.0, 1 / 60)
+        rho = 1.0 / kp
+        self.assertAlmostEqual(locked * surfaces.graph_at(VEHICLE_GRAPH, 1.0),
+                               peak * (c.sliding + (1 - c.sliding) / rho), places=6)
+
+    def test_the_drop_lags_over_the_relaxation_length(self):
+        c = TABLE["mud_wet"]
+        ws = self.wheels()
+        s, cond = Surface("mud_wet"), RoadCondition()
+        ws.update(0, s, cond, 10.0, 0.0, 1 / 60)
+        kp, tp = ws.class_peaks(c)
+        first = ws.update(0, s, cond, 10.0, 0.0, 1 / 60, None, math.atan(3 * tp))
+        target = c.sliding + (1 - c.sliding) / 3
+        step = 10.0 / 60 / c.relaxation
+        self.assertAlmostEqual(first / ws.tire_friction / ws.mu[0], 1 + (target - 1) * step)
+        # at a crawl, no lag
+        slow = ws.update(0, s, cond, 0.5, 0.0, 1 / 60, None, math.atan(3 * tp))
+        self.assertAlmostEqual(slow / ws.mu[0], target)
+
+    def test_the_stiffness_puts_physxs_peak_on_the_classs(self):
+        ws = self.wheels()
+        c = TABLE["mud_wet"]
+        ws.update(0, Surface("mud_wet"), RoadCondition(), 10.0, 0.0, 1 / 60)
+        lat, lon = ws.stiffness[0]
+        mu = ws.mu[0]  # the rig's tire_friction is 1.0
+        # PhysX's peak is the rig's per unit friction, times the friction, over the stiffness
+        self.assertAlmostEqual(RIG_PEAKS[1] * mu / lat, math.tan(c.peak_slip_angle))
+        self.assertAlmostEqual(RIG_PEAKS[0] * mu / lon, c.peak_slip)
+        self.assertLess(lat, 0.3)  # a much softer tire than on asphalt
+        # wet asphalt: the rig's peak slip kept, so the stiffness falls with the friction
+        ws.update(1, Surface("asphalt"), RoadCondition(wetness="wetWithPuddles"), 10.0, 0.0,
+                  1 / 60)
+        self.assertAlmostEqual(ws.stiffness[1][0], 0.75)
+
+    def test_stribeck_lowers_the_sliding_share_with_sliding_speed(self):
+        c = TABLE["ice"]
+        self.assertAlmostEqual(surfaces.sliding_share(c, 0.0), c.sliding)
+        self.assertAlmostEqual(surfaces.sliding_share(c, 100.0), c.stribeck.sliding)
+        self.assertLess(surfaces.sliding_share(c, c.stribeck.speed), c.sliding)
+        self.assertEqual(surfaces.sliding_share(TABLE["mud_wet"], 50.0), TABLE["mud_wet"].sliding)
 
     def test_a_class_edge_is_followed_over_the_blend_length(self):
         ws = self.wheels()
         cond = RoadCondition()
         ws.update(0, Surface("asphalt"), cond, 10.0, 0.0, 0.01)
-        target = 0.6 / 0.85  # gravel at slip where its graph is 1 and the vehicle's too:
-        mu = ws.update(0, Surface("gravel"), cond, 10.0, 0.5, 0.01)  # 0.1 m: half the length
-        self.assertGreater(mu, 0.0)
+        target = 0.6 / 0.85
+        ws.update(0, Surface("gravel"), cond, 10.0, 0.0, 0.01)  # 0.1 m: half the length
         raw = [ws.mu[0]]
         for _ in range(9):  # 0.9 m more: half the gap left at every 0.1 m
-            ws.update(0, Surface("gravel"), cond, 10.0, 0.5, 0.01)
+            ws.update(0, Surface("gravel"), cond, 10.0, 0.0, 0.01)
             raw.append(ws.mu[0])
         self.assertAlmostEqual(raw[0], 1.0 + (target - 1.0) * 0.5)
         self.assertAlmostEqual(raw[-1], target + (1.0 - target) * 0.5 ** 10)
+        # the peaks follow alike
+        kp = ws.class_peaks(TABLE["gravel"])[0]
+        self.assertAlmostEqual(ws.peaks[0][0], kp + (RIG_PEAKS[0] - kp) * 0.5 ** 10)
         # standing still, nothing changes
         ws.update(0, Surface("asphalt"), cond, 0.0, 0.0, 0.01)
         self.assertAlmostEqual(ws.mu[0], raw[-1])
@@ -372,21 +436,12 @@ class WheelSurfacesTest(unittest.TestCase):
         ws = self.wheels()
         ws.update(1, Surface("ice"), RoadCondition(), 5.0, 0.0, 0.01)
         held = ws.update(1, None, RoadCondition(), 5.0, 0.0, 0.01)
-        self.assertAlmostEqual(held, 0.1 / 0.85 * surfaces.graph_at(TABLE["ice"].slip, 0.0))
+        self.assertAlmostEqual(held, 0.1 / 0.85)
         ws.reset()
         self.assertEqual(ws.update(1, None, RoadCondition(), 5.0, 0.0, 0.01), 1.0)
         self.assertAlmostEqual(ws.update(1, Surface("asphalt"), RoadCondition(), 5.0, 0.0,
                                          0.01), 1.0)
-
-    def test_the_class_slip_curve_replaces_the_vehicles(self):
-        ws = self.wheels()
-        s, cond = Surface("gravel"), RoadCondition()
-        ws.update(0, s, cond, 10.0, 0.0, 0.01)
-        base = ws.mu[0]
-        locked = ws.update(0, s, cond, 10.0, -0.78, 0.01)
-        # PhysX applies the vehicle's graph on top: their product is gravel's own curve
-        self.assertAlmostEqual(locked * surfaces.graph_at(VEHICLE_GRAPH, 0.78),
-                               base * surfaces.graph_at(TABLE["gravel"].slip, 0.78))
+        self.assertEqual(ws.stiffness[1], (1.0, 1.0))
 
 
 class FakeAttr:
@@ -433,13 +488,17 @@ class FakeVehicle:
 
     def __init__(self, contacts):
         self.p = SimpleNamespace(tire_friction=1.0, friction_vs_slip=VEHICLE_GRAPH,
-                                 wheel_radius=0.37, wheel_width=0.235)
+                                 wheel_radius=0.37, wheel_width=0.235, **vars(RIG))
         self.contacts = contacts
-        self.wheel_states = [SimpleNamespace(slip=0.0, rotation_speed=0.0)] * 4
+        self.wheel_states = [SimpleNamespace(slip=0.0, slip_angle=0.0, rotation_speed=0.0)] * 4
         self.written = {}
+        self.stiffness = {}
 
     def set_wheel_friction(self, i, mu):
         self.written[i] = mu
+
+    def set_wheel_stiffness(self, i, lateral, longitudinal):
+        self.stiffness[i] = (lateral, longitudinal)
 
 
 class FakeTiles:
@@ -634,7 +693,7 @@ class SurfaceLayerTest(unittest.TestCase):
         def at(x):
             v.contacts = [c(on_ground=True, position=(x, y, 0.0), shape="/World/env/Road_1/m",
                             load=4500.0, direction=(1.0, 0.0, 0.0)) for y in (-0.8, 0.8)] * 2
-            v.wheel_states = [SimpleNamespace(slip=0.2, rotation_speed=speed / 0.8 / 0.37)] * 4
+            v.wheel_states = [SimpleNamespace(slip=0.2, slip_angle=0.0, rotation_speed=speed / 0.8 / 0.37)] * 4
             forces.clear()
             layer.begin_step()
             layer.update(v, speed, 1 / 60)
@@ -651,7 +710,7 @@ class SurfaceLayerTest(unittest.TestCase):
         self.assertLess(forces[0][1][0], -500.0)  # against the travel, at the contact
         self.assertEqual(forces[0][2][0], v.contacts[0].position[0])
         mu = inside[0].mu(4500.0)
-        shape = surfaces.graph_at(TABLE["sand"].slip, 0.2) / surfaces.graph_at(VEHICLE_GRAPH, 0.2)
+        shape = 1.0 / surfaces.graph_at(VEHICLE_GRAPH, 0.2)  # under sand's peak slip (0.3)
         self.assertAlmostEqual(v.written[0], mu / TABLE["asphalt"].mu * shape, delta=0.02)
         self.assertGreater(layer.grids["sand_pit"].depth(10.0, 0.8), 0.05)
         layer.fresh_soil()

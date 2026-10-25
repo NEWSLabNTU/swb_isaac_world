@@ -4,8 +4,10 @@ from the loaded world's surface map (`swb_isaac_world.surfaces`). Import after `
 After each substep the wheel's ground hit (aib's `Vehicle.contacts`) names a point and a
 collider: the collider's SimReady label (`semantics:labels:wikidata_qcode` on it or an
 ancestor) picks the label default, a zone over the point overrides it, and the friction for
-the next substep goes into the wheel's own table (`Vehicle.set_wheel_friction`). A world
-with no surface map is left alone: every wheel keeps the rig's tire friction.
+the next substep goes into the wheel's own table (`Vehicle.set_wheel_friction`), the tire's
+stiffness with it (`Vehicle.set_wheel_stiffness`, 054 T1: so PhysX's tire peaks at the
+ground's own slip, and falls past it). A world with no surface map runs every wheel on the
+reference class (`surfaces.NO_MAP`).
 
 Where the map comes from: `surfaces.yaml` in the map directory of a world file the server
 was started with (`--world`), looked for at every `LoadWorld`; swb's `LoadWorld` sends only
@@ -52,6 +54,20 @@ KINEMATIC_JUMP = 5.0  # m in one frame: a teleport (100 m/s at 20 Hz)
 # opposes motion that happens, it never pushes a car standing still (docs/issues/004).
 RESIST_V0 = 0.1
 G = 9.81
+# PhysX's tire saturates near a slip of PEAK_SPAN mu F_z / C, and uses about STIFFNESS_IN_USE
+# of the stiffness the rig writes (054 step 4a, spikes/tire_curve.py: 2.3, 0.9; the cap is
+# about 1.15 mu times the suspension force).
+PEAK_SPAN = 2.3
+STIFFNESS_IN_USE = 0.9
+
+
+def rig_peaks(p):
+    """The rig's tire at friction 1.0: (longitudinal slip, tan slip angle) at its peak, from
+    aib's VehicleParams `p` (lateral stiffness per N of load, longitudinal per g at the
+    nominal load mass g / 4)."""
+    load = p.mass * G / 4
+    return (PEAK_SPAN * load / (STIFFNESS_IN_USE * p.long_stiff_value * G),
+            PEAK_SPAN / (STIFFNESS_IN_USE * p.lat_stiff_value))
 
 
 def kinematic_wheels(dims, center, physics=None):
@@ -146,7 +162,7 @@ class SurfaceLayer:
         if ws is None:
             ws = self.wheels[vehicle.path] = surfaces.WheelSurfaces(
                 self.map, vehicle.p.tire_friction, vehicle.p.friction_vs_slip,
-                len(vehicle.wheel_paths))
+                rig_peaks(vehicle.p), len(vehicle.wheel_paths))
         ox, oy, _ = self.origin
         for i, (c, w) in enumerate(zip(vehicle.contacts, vehicle.wheel_states)):
             s = self.map.at(c.position[0] + ox, c.position[1] + oy, self.label(c.shape)) \
@@ -157,8 +173,9 @@ class SurfaceLayer:
             else:
                 self.soil_out.pop((vehicle.path, i), None)
                 self.soil_xy.pop((vehicle.path, i), None)
-            mu = ws.update(i, s, self.condition, speed, w.slip, dt, target)
+            mu = ws.update(i, s, self.condition, speed, w.slip, dt, target, w.slip_angle)
             vehicle.set_wheel_friction(i, mu)
+            vehicle.set_wheel_stiffness(i, *ws.stiffness[i])
             if s is not None and self.logged.get((vehicle.path, i)) != s:
                 # a wheel onto other ground: rare (class and zone edges), so INFO
                 self.logged[(vehicle.path, i)] = s
