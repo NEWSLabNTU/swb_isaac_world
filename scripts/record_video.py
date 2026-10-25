@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """A recorded run (`--record`, `recorder.py`) as one video: the dash camera and the trackside
 camera at the soil zone side by side, the wheel camera inset in the trackside one (or beside
-the dash camera when there is no trackside one), the ego's state and each wheel's ground below.
+the dash camera when there is no trackside one), the ego's state, what its onboard computers
+estimated (speed, friction, each wheel's slip) and did (ABS, TC), and each wheel's ground below.
 
     scripts/record_video.py <record dir>/<time>-<ego> [out.mp4] [--from T] [--to T] [--title S]
 
@@ -98,13 +99,19 @@ def main():
         where = f"{ground['class']} (zone {ground['zone']})" if ground else \
             (r["wheels"][0].get("class") or "-")
         cmd = "-" if r["accel_cmd"] is None else f"{r['accel_cmd']:+.2f}"
-        d.text((16, y), f"t {r['t']:7.2f} s   speed {3.6 * r['speed']:5.1f} km/h   "
-               f"accel {r['accel']:+.2f} m/s2 (Autoware asks {cmd})",
-               fill=FG, font=font(19, True))
+        d.text((16, y), f"t {r['t']:7.2f} s  speed {3.6 * r['speed']:5.1f} km/h  "
+               f"accel {r['accel']:+.2f} m/s2 (Autoware asks {cmd})  "
+               f"pitch {r['pitch_deg']:+.1f} deg", fill=FG, font=font(18, True))
         d.text((16, y + 30), f"ground: {where}", fill=SOIL if ground else DIM, font=font(19, True))
-        d.text((560, y + 30), f"pitch {r['pitch_deg']:+.1f} deg", fill=FG, font=font(19, True))
+        ecu = r.get("ecu")
+        if ecu:  # the onboard computers (sim_vehicle_ecu): what they estimated, ABS and TC
+            abs_min = min(ecu.get("abs") or [1.0])
+            tc = 1.0 if ecu.get("tc") is None else ecu["tc"]
+            d.text((392, y + 33), f"ECU estimates {3.6 * ecu['speed']:5.1f} km/h, friction "
+                   f"{ecu['mu']:.2f} | ABS {abs_min:.2f}  TC {tc:.2f}",
+                   fill=ACCENT if abs_min < 1.0 or tc < 1.0 else FG, font=font(16, True))
         y += 66
-        d.text((16, y), "wheel          ground      sinkage   resistance   friction   slip",
+        d.text((16, y), "wheel          ground      sinkage   resistance   friction   slip  est.",
                fill=DIM, font=font(16))
         for i, w in enumerate(r["wheels"]):
             s = w.get("sinkage_cm")
@@ -113,7 +120,8 @@ def main():
                     f"{'' if s is None else f'{s:5.1f} cm':>8}   "
                     f"{'' if res is None else f'{res:6d} N':>10}   "
                     f"{'' if w.get('mu') is None else format(w['mu'], '.2f'):>8}   "
-                    f"{'' if w.get('slip') is None else format(w['slip'], '+.2f'):>5}")
+                    f"{'' if w.get('slip') is None else format(w['slip'], '+.2f'):>5} "
+                    f"{'' if w.get('slip_est') is None else format(w['slip_est'], '+.2f'):>5}")
             d.text((16, y + 22 * (i + 1)), line, fill=SOIL if s is not None else FG, font=font(16))
         x0 = 1000
         plot(d, (x0, H + 12, x0 + 430, H + STRIP - 12), ts, speed, r["t"], 0,
