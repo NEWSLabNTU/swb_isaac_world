@@ -99,7 +99,7 @@ ensure_vehicle_scene(stage)
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
     os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
-veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims,
+veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.ecu, rig.box_center, rig.box_dims,
               ((0.0, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0)))
 sim = omni.physx.get_physx_simulation_interface()
 forces = []  # the soil's resistance this substep, N (for the entry case)

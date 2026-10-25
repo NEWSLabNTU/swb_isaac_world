@@ -5,11 +5,11 @@
     # prints one SPIKE-RESULT json
 
 The pad is one mesh labelled Road (SimReady's Q-code), so outside a zone every wheel is on dry
-asphalt; zones start at x = 150. Each case brakes at full demand (aib's powertrain, ABS on)
+asphalt; zones start at x = 150. Each case brakes at full demand (the onboard computers, ABS on)
 from 20 m/s once the car is in its lane's zone, unless it says otherwise:
 
   dry        no zone: the baseline
-  dry_no_abs dry, aib's powertrain with ABS off (the brakes lock the wheels)
+  dry_no_abs dry, the onboard computers with ABS off (the brakes lock the wheels)
   wet        wetWithPuddles
   gravel     gravel; and gravel_no_abs
   ice        ice
@@ -82,7 +82,7 @@ ensure_vehicle_scene(stage)
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
     os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
-veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims,
+veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.ecu, rig.box_center, rig.box_dims,
               ((0.0, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0)))
 with tempfile.TemporaryDirectory() as d:
     path = os.path.join(d, "surfaces.yaml")
@@ -115,7 +115,7 @@ def yaw():
 
 def case(name, speed=20.0, abs_on=True):
     y = LANES[name]
-    veh.powertrain.p = dataclasses.replace(veh.powertrain.p, abs_enabled=abs_on)
+    veh.ecu.powertrain.c = dataclasses.replace(veh.ecu.powertrain.c, abs_enabled=abs_on)
     start = -60.0 if speed > 20 else 0.0
     veh.teleport(((start, y, 0.05), (1.0, 0.0, 0.0, 0.0)), physx)
     layer.reset(veh.path)
@@ -176,7 +176,7 @@ out["mu_split"] = case("mu_split")
 out["flood_15"] = case("flood_15", speed=15.0)
 out["flood_25"] = case("flood_25", speed=25.0)
 u = sorted(update_s)
-veh.powertrain.p = dataclasses.replace(veh.powertrain.p, abs_enabled=True)
+veh.ecu.powertrain.c = dataclasses.replace(veh.ecu.powertrain.c, abs_enabled=True)
 out["launch_dry"] = launch("launch_dry", x=0.0)
 out["launch_ice"] = launch("launch_ice")
 out["update_us"] = {"p50": round(u[len(u) // 2] * 1e6, 1), "p99": round(u[int(len(u) * 0.99)] * 1e6, 1),

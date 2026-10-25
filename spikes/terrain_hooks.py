@@ -100,7 +100,7 @@ cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
     os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
 pose = ((0.0, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0))
-veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims, pose)
+veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.ecu, rig.box_center, rig.box_dims, pose)
 table.CreateDefaultFrictionValueAttr(1.0)
 for i, wp in enumerate(veh.wheel_paths):  # frontLeft, rearLeft: the left table
     PhysxSchema.PhysxVehicleTireAPI(stage.GetPrimAtPath(wp)).GetFrictionTableRel().SetTargets(

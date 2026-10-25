@@ -3,7 +3,10 @@
     ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/manoeuvres.py \\
         [<out dir>]
     # MANOEUVRES=brake,step,...: only these manoeuvres; PADS=dry,mud: only these pads
-    # RIG='{"esc_enabled": true}': VehicleParams overrides for every case
+    # ECU='{"esc_enabled": true}': the onboard computers' calibration overrides, every case
+    # RIG='{"tire_friction": 0.9}': the PhysX vehicle's (VehicleParams) overrides
+    # ESTIMATOR=truth: the onboard computers read PhysX's speed, slips, sideslip and friction
+    #   instead of estimating them (roadmap 055's check that the move alone changed nothing)
     # prints one SPIKE-RESULT json; each case's frames go to <out dir>/<pad>_<manoeuvre>.jsonl
 
 One aib ego without Autoware, its command set here as the vehicle interface would, on a flat
@@ -39,7 +42,8 @@ os.environ.pop("DISPLAY", None)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from isaacsim import SimulationApp  # noqa: E402
 
-app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]})
+app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]
+                     + os.environ.get("ISAAC_KIT_ARGS", "").split()})  # the world server's host setting
 import copy  # noqa: E402
 import logging  # noqa: E402
 
@@ -109,10 +113,34 @@ world = IsaacWorld(ego_config=EGO_YAML, ego_domain=int(os.environ.get("STEP_DOMA
 for s in world.ego_rig.sensors.values():
     s.enabled = False
 RIG = json.loads(os.environ.get("RIG", "{}"))
-if RIG:
+ECU = json.loads(os.environ.get("ECU", "{}"))
+TRUTH = os.environ.get("ESTIMATOR", "") == "truth"
+if RIG or ECU:
     world.ego_rig = dataclasses.replace(
-        world.ego_rig, vehicle=dataclasses.replace(world.ego_rig.vehicle, **RIG))
-    log.info("rig overrides %s", RIG)
+        world.ego_rig, vehicle=dataclasses.replace(world.ego_rig.vehicle, **RIG),
+        ecu=dataclasses.replace(world.ego_rig.ecu, **ECU))
+    log.info("overrides: vehicle %s, ecu %s", RIG, ECU)
+
+
+class TruthEstimator:
+    """PhysX's own speed, slips, sideslip and friction, as aib's powertrain and ESC read them
+    before roadmap 055: a spike's check, never shipped."""
+
+    def __init__(self, ego):
+        self.ego = ego
+
+    def reset(self):
+        pass
+
+    def step(self, sensors, dt, tire_angle, activity):
+        from sim_vehicle_ecu.estimator import Estimate
+
+        s, v = self.ego.state, self.ego.vehicle
+        vx, vy = s.velocity[0], s.velocity[1]
+        return Estimate(vx, v.wheel_states, math.atan2(vy, max(abs(vx), 0.1)),
+                        sum(v.friction_values) / len(v.friction_values))
+
+
 P = world.ego_rig.vehicle
 L = P.wheel_base
 world.preload(usd)
@@ -128,6 +156,8 @@ def spawn(y):
     world.spawn(handle[0], "ego", "EGO", "", (1.5, 0.0, 0.9), (4.8, 2.1, 1.5),
                 ((X_SPAWN, y, 0.3), (1.0, 0.0, 0.0, 0.0)))  # heading +x
     ego = world.egos[handle[0]]
+    if TRUTH:
+        ego.vehicle.ecu.estimator = TruthEstimator(ego)
     cmd = copy.copy(ego.ros.cmd)
 
     def before_substep(dt, e=ego, c=cmd):
@@ -197,7 +227,8 @@ def row(t, phase, ego, cmd, yaw_u):
     s, v = ego.state, ego.vehicle
     vx, vy = s.velocity[0], s.velocity[1]
     ws = surface.wheels.get(v.path) if surface is not None else None
-    dbg = getattr(v.powertrain, "debug", {}) or {}
+    dbg = v.ecu.debug
+    est = dbg.get("estimate") or {}
     return {"t": round(t, 3), "phase": phase, "x": round(s.position[0], 3),
             "y": round(s.position[1], 3), "yaw": round(math.degrees(yaw_u), 3),
             "r": round(math.degrees(s.angular_velocity[2]), 3), "vx": round(vx, 3),
@@ -207,6 +238,9 @@ def row(t, phase, ego, cmd, yaw_u):
             "cmd_a": round(cmd.acceleration, 3), "cmd_tire": round(math.degrees(cmd.tire_angle), 3),
             "abs": [round(a, 2) for a in dbg.get("abs", ())], "tc": dbg.get("tc"),
             "esc": dbg.get("esc"),
+            "est": {"v": round(est["speed"], 3), "beta": round(math.degrees(est["sideslip"]), 3),
+                    "mu": round(est["friction"], 3),
+                    "slip": est["slip"] and [round(x, 3) for x in est["slip"]]} if est else None,
             "mu": [None if ws is None or m is None else round(m, 3) for m in ws.mu]
             if ws is not None else None,
             "slip": [round(w.slip, 3) for w in v.wheel_states] if v.wheel_states else None,
@@ -372,7 +406,8 @@ def summarise(pad, kind, m, v_go, amp, y0):
 
 pads = os.environ.get("PADS", "dry,wet,mud,split").split(",")
 kinds = os.environ.get("MANOEUVRES", ",".join(MANOEUVRES)).split(",")
-result = {"out": OUT, "rig": RIG, "cases": []}
+result = {"out": OUT, "rig": RIG, "ecu": ECU, "estimator": "truth" if TRUTH else "ecu",
+          "cases": []}
 for pad in pads:
     for kind in kinds:
         if pad == "split" and kind != "brake":

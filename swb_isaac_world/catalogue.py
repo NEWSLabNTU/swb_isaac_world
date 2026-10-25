@@ -59,7 +59,8 @@ def check_ego(rig, physics):
 
 
 def physics_params(physics):
-    """What CARLA's blueprint would give as VehicleParams fields (dump_vehicle_physics.py):
+    """What CARLA's blueprint would give, named as aib's VehicleParams and sim_vehicle_ecu's
+    Calibration name them (dump_vehicle_physics.py; the torque limits are the calibration's):
     reference only, for comparing the ego with CARLA's car; the ego never applies it."""
     out = {"mass": float(physics["mass"])}
     wheels = physics.get("wheels") or []

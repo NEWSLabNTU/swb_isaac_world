@@ -8,7 +8,9 @@ of the ego at its spawn, past the zone's far end, looking back along the ego's l
 render mesh shows a tile's ruts only once the wheels are 3 m past it (`soil_tiles`), so they
 appear behind the car, which the wheel camera never sees. Every frame the world server
 renders, the pictures are written as JPEGs, and one JSON line holds the ego's state and each
-wheel's ground: class, sinkage, soil resistance, friction and slip. Written by a thread, so
+wheel's ground: class, sinkage, soil resistance, friction and slip, and what the car's onboard
+computers estimated and did (`ecu`: speed, friction, sideslip, ABS and TC factors, ESC, the
+wheel torques). Written by a thread, so
 the frame does not wait for the disk.
 
     <dir>/<time>-<ego name>/dash/000123.jpg, wheel/..., track/..., state.jsonl
@@ -183,6 +185,18 @@ class Recorder:
                "speed": round(s.velocity[0], 3), "accel": round(s.acceleration[0], 3),
                "accel_cmd": cmd and round(cmd.acceleration, 3),
                "tire_angle": round(s.tire_angle, 4), "wheels": []}
+        # The onboard computers (sim_vehicle_ecu): what they estimated and what they did
+        dbg = v.ecu.debug
+        est = dbg.get("estimate") or {}
+        if est:
+            row["ecu"] = {"speed": round(est["speed"], 3), "mu": round(est["friction"], 3),
+                          "sideslip_deg": round(math.degrees(est["sideslip"]), 2),
+                          "abs": [round(a, 2) for a in dbg.get("abs", ())],
+                          "tc": dbg.get("tc") and round(dbg["tc"], 2),
+                          "esc": dbg.get("esc")}
+            if v.torques is not None:
+                row["ecu"]["drive"] = [round(t) for t in v.torques.drive]
+                row["ecu"]["brake"] = [round(t) for t in v.torques.brake]
         ws = surface.wheels.get(v.path) if surface is not None else None
         for i in range(len(v.wheel_paths)):
             wheel = {}
@@ -195,6 +209,8 @@ class Recorder:
                 wheel["mu"] = round(ws.mu[i], 3)
             if v.wheel_states is not None:
                 wheel["slip"] = round(v.wheel_states[i].slip, 3)
+            if est.get("slip"):
+                wheel["slip_est"] = round(est["slip"][i], 3)
             out = surface.soil_out.get((v.path, i)) if surface is not None else None
             if out is not None:
                 o, share = out

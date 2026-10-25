@@ -74,7 +74,7 @@ ensure_vehicle_scene(stage)
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
     os.path.dirname(__file__), "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
-veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.box_center, rig.box_dims,
+veh = Vehicle(stage, "/World/ego", rig.vehicle, rig.ecu, rig.box_center, rig.box_dims,
               ((LANE_X, START_Y, 0.3), HEADING))
 world.reset()
 world.play()

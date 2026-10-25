@@ -103,7 +103,7 @@ def row(t, phase, ego, cmd):
     s, v = ego.state, ego.vehicle
     vx, vy = s.velocity[0], s.velocity[1]
     ws = surface.wheels.get(v.path)
-    dbg = getattr(v.powertrain, "debug", {}) or {}
+    dbg = v.ecu.debug
     wheels = []
     for i in range(len(v.wheel_paths)):
         g = ws.surfaces[i] if ws is not None else None
