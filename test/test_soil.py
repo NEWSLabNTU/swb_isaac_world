@@ -276,6 +276,51 @@ class WarpTest(unittest.TestCase):
         self.assertLess((time.perf_counter() - t0) / n, 400e-6)  # 141 us measured, loaded host
 
 
+
+class SidewallTest(unittest.TestCase):
+    """054 T2: the soil against a sunk tire's side."""
+
+    def test_bearing_factors_are_terzaghis(self):
+        nc, ng = soil.bearing_factors(0.0)
+        self.assertAlmostEqual(nc, 2.0 + math.pi, places=6)  # Prandtl's 5.14
+        self.assertEqual(ng, 0.0)
+        nc, ng = soil.bearing_factors(math.radians(30.0))
+        self.assertAlmostEqual(nc, 30.14, delta=0.05)  # the tables' N_c, N_gamma (Vesic)
+        self.assertAlmostEqual(ng, 22.40, delta=0.05)
+
+    def test_it_grows_with_the_height_and_nothing_without(self):
+        length = soil.contact_length(R, 0.04)
+        self.assertAlmostEqual(length, 2 * math.sqrt(2 * R * 0.04 - 0.04 ** 2))
+        self.assertEqual(soil.sidewall(MUD, 0.0, length), 0.0)
+        f2, f4 = (soil.sidewall(MUD, z, length) for z in (0.02, 0.04))
+        self.assertGreater(f4, 2 * f2)  # cohesion linear, weight quadratic in the height
+        self.assertAlmostEqual(f4, 209.0, delta=5.0)  # mud at 4 cm: worked by hand
+        self.assertGreater(soil.sidewall(SAND, 0.04, length), 0.0)
+
+    def test_fresh_soil_stands_at_the_sinkage_both_sides(self):
+        o = wr(MUD)
+        self.assertEqual(o.side, (o.sinkage, o.sinkage))
+        g = SoilGrid(MUD, kernel="numpy")
+        out = None
+        for n in range(30):
+            g.begin_step()
+            out = g.wheel(0, n * 5.0 / 60, 0.013, 0.0, 4500.0, R, B, 5.0 / 0.8, 5.0, 1 / 60)
+        self.assertGreater(out.sinkage, 0.01)
+        for h in out.side:
+            self.assertAlmostEqual(h, out.sinkage, delta=1e-6)
+
+    def test_an_old_rut_beside_the_tire_lowers_that_side(self):
+        g = SoilGrid(MUD, kernel="numpy")
+        drive(g, y=0.013 - 0.3, key=1)  # a rut 30 cm to the right
+        out = None
+        for n in range(30):  # a second wheel beside it, its right side over the old rut's
+            g.begin_step()
+            out = g.wheel(2, n * 5.0 / 60, 0.013 - 0.3 + B, 0.0, 4500.0, R, B, 5.0 / 0.8,
+                          5.0, 1 / 60)
+        left, right = out.side
+        self.assertAlmostEqual(left, out.sinkage, delta=1e-6)
+        self.assertLess(right, left)
+
 class EdgeTest(unittest.TestCase):
     def test_the_soil_fades_in_from_the_zone_edge(self):
         sq = [[0, 0], [10, 0], [10, 10], [0, 10]]

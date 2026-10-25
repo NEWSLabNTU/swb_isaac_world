@@ -218,7 +218,8 @@ class Recorder:
                 o, share = out
                 wheel.update(sinkage_cm=round(100 * o.sinkage, 2),
                              resistance_n=round(o.resistance * share),
-                             traction_limit_n=round(o.traction_limit))
+                             traction_limit_n=round(o.traction_limit),
+                             side_n=round(surface.side_force.get((v.path, i), 0.0)))
             row["wheels"].append(wheel)
         return row
 

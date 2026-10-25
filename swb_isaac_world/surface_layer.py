@@ -53,6 +53,9 @@ KINEMATIC_JUMP = 5.0  # m in one frame: a teleport (100 m/s at 20 Hz)
 # The soil's motion resistance is full from this speed up and fades to none at rest, m/s: it
 # opposes motion that happens, it never pushes a car standing still (docs/issues/004).
 RESIST_V0 = 0.1
+# The soil against a sunk tire's side (054 T2, soil.sidewall) builds with the contact's lateral
+# speed as tanh(v / SIDE_V0), m/s: full once the tire is sliding sideways, none rolling straight.
+SIDE_V0 = 0.1
 G = 9.81
 # PhysX's tire saturates near a slip of PEAK_SPAN mu F_z / C, and uses about STIFFNESS_IN_USE
 # of the stiffness the rig writes (054 step 4a, spikes/tire_curve.py: 2.3, 0.9; the cap is
@@ -104,6 +107,7 @@ class SurfaceLayer:
         self.grids = {}  # soil zone id -> soil.SoilGrid, made when a wheel first enters
         self.soil_out = {}  # (vehicle path, wheel) -> (soil.WheelSoil, share) of the last step
         self.soil_xy = {}  # (vehicle path, wheel) -> its map-frame contact on soil
+        self.side_force = {}  # (vehicle path, wheel) -> the soil on its side, N, + to its left
         self.tiles = {}  # zone id -> its own ground (make_tiles)
         # vehicle path -> [previous (x, y, yaw), this frame's, wheels, radius, width, load]
         self.kinematic = {}
@@ -173,6 +177,7 @@ class SurfaceLayer:
             else:
                 self.soil_out.pop((vehicle.path, i), None)
                 self.soil_xy.pop((vehicle.path, i), None)
+                self.side_force.pop((vehicle.path, i), None)
             mu = ws.update(i, s, self.condition, speed, w.slip, dt, target, w.slip_angle)
             vehicle.set_wheel_friction(i, mu)
             vehicle.set_wheel_stiffness(i, *ws.stiffness[i])
@@ -204,9 +209,9 @@ class SurfaceLayer:
             g.begin_step()
 
     def _soil(self, vehicle, i, contact, wheel, s, speed, dt):
-        """Wheel `i` in soil zone `s.zone`: its resistance force for the next step, and its
-        friction target relative to dry reference ground (blended toward the class's at the
-        zone's edge)."""
+        """Wheel `i` in soil zone `s.zone`: its resistance and sidewall forces for the next
+        step, and its friction target relative to dry reference ground (blended toward the
+        class's at the zone's edge)."""
         table = self.map.table
         zone = next(z for z in self.map.zones if z.id == s.soil_zone)
         params = table[s.cls].soil
@@ -230,11 +235,35 @@ class SurfaceLayer:
         share = soil.edge_weight(zone.polygon, x, y, SOIL_BLEND * 2 * r)
         self.soil_out[(vehicle.path, i)] = (out, share)
         self.soil_xy[(vehicle.path, i)] = (x, y)
-        if self.apply_force is not None and out.resistance > 0 and share > 0:
+        side = self._sidewall(vehicle, i, wheel, out, params, table[s.cls], speed, dt) * share
+        if self.apply_force is not None and share > 0 and (out.resistance > 0 or side):
             f = -out.resistance * share * resistance_scale(speed)
-            self.apply_force(vehicle.path, (f * dx, f * dy, f * dz), contact.position)
+            n = math.hypot(dx, dy) or 1.0
+            lx, ly = -dy / n, dx / n  # the tire's left, level
+            self.apply_force(vehicle.path, (f * dx + side * lx, f * dy + side * ly, f * dz),
+                             contact.position)
         soil_mu = self.condition.friction_scale * out.mu(contact.load) / table[table.reference].mu
         return share * soil_mu + (1 - share) * surfaces.peak_mu(table, s, self.condition, speed)
+
+    def _sidewall(self, vehicle, i, wheel, out, params, cls, speed, dt):
+        """The soil against wheel `i`'s side (054 T2), N, + to the tire's left: the passive
+        pressure on the side it slides toward (`soil.sidewall`, at the height the soil there
+        stands above its bottom), opposing the contact's lateral speed, through the class's
+        relaxation length like T1's drop past the peak."""
+        # PhysX's lateral slip is atan(v_lat / max(|v|, its lateral denominator)), v_lat along
+        # the tire's left (054 step 4a: a left turn's rear tires read alpha < 0)
+        v_lat = math.tan(wheel.slip_angle) * max(abs(speed), vehicle.p.min_lateral_slip_denominator)
+        lead = out.side[0] if v_lat > 0 else out.side[1]
+        length = soil.contact_length(vehicle.p.wheel_radius, out.sinkage)
+        target = -math.tanh(v_lat / SIDE_V0) * soil.sidewall(params, lead, length)
+        key = (vehicle.path, i)
+        last = self.side_force.get(key)
+        if last is None or abs(speed) < surfaces.LAG_MIN_SPEED or cls.relaxation <= 0:
+            force = target
+        else:
+            force = last + (target - last) * min(1.0, abs(speed) * dt / cls.relaxation)
+        self.side_force[key] = force
+        return force
 
     def set_kinematic(self, path, x, y, yaw, wheels, mass):
         """Once a frame, before its substeps: kinematic vehicle `path` (world frame, yaw from
@@ -297,6 +326,7 @@ class SurfaceLayer:
         self.grids = {}
         self.soil_out = {}
         self.soil_xy = {}
+        self.side_force = {}
         self.ruts, self.driven, self.saved = None, False, True
         for t in self.tiles.values():
             t.clear()
@@ -387,6 +417,7 @@ class SurfaceLayer:
         self.kinematic_sink.pop(vehicle_path, None)
         self.soil_out = {k: v for k, v in self.soil_out.items() if k[0] != vehicle_path}
         self.soil_xy = {k: v for k, v in self.soil_xy.items() if k[0] != vehicle_path}
+        self.side_force = {k: v for k, v in self.side_force.items() if k[0] != vehicle_path}
 
 
 def resistance_scale(speed):

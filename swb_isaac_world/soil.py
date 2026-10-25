@@ -30,6 +30,11 @@ Outputs, for the surface layer to hand PhysX (the spike's three channels):
   resistance      the soil's pressure on the front of the wheel against the travel (compaction,
                   N >= 0): a force at the contact (`apply_force_at_pos`).
   sinkage         the wheel bottom below the undisturbed surface, m; the rut is in the grid.
+  side            (left, right): how far the soil beside each side of the tire stands above
+                  its bottom, m. Pushed sideways, a sunk tire drives its side into that soil,
+                  which resists with its passive earth pressure (`sidewall`, roadmap 054 T2):
+                  on fresh soil at the sinkage (Ishigami's bulldozing), against an old rut's
+                  wall at the wall's height.
 
 Slip sinkage (a spinning or locked wheel digs in) is not in Bekker's equation. Both models
 take Lyasko's factor (2010): the static sinkage times (1 + |i|) / (1 - 0.5 |i|), through
@@ -66,6 +71,7 @@ class SoilParams:
     janosi_k: float
     elastic_k: float = ELASTIC_K
     slip_sinkage: float = 1.0  # Lyasko's slip sinkage to this power (S5's fit; 1: as published)
+    unit_weight: float = 16000.0  # N/m^3, the soil's bulk unit weight (sidewall pressure)
 
     def k(self, width):
         return self.k_c / width + self.k_phi
@@ -77,13 +83,14 @@ def parse_params(d, where="soil"):
     keys = ("n", "k_c", "k_phi", "cohesion", "friction_angle", "janosi_k")
     if not isinstance(d, dict):
         raise SoilError(f"{where}: not a mapping of {', '.join(keys)}")
-    unknown = set(d) - set(keys) - {"elastic_k", "slip_sinkage"}
+    optional = ("elastic_k", "slip_sinkage", "unit_weight")
+    unknown = set(d) - set(keys) - set(optional)
     if unknown:
         problems.append(f"{where}: unknown key(s) {sorted(unknown)}")
     vals = {}
-    for k in (*keys, "elastic_k", "slip_sinkage"):
+    for k in (*keys, *optional):
         if k not in d:
-            if k not in ("elastic_k", "slip_sinkage"):
+            if k not in optional:
                 problems.append(f"{where}: needs {k}")
             continue
         v = d[k]
@@ -110,6 +117,7 @@ class WheelSoil:
     thrust: float  # N, the soil's shear on the wheel, forward positive
     traction_limit: float  # N
     load: float  # N, what the soil carries (less than asked when the wheel bottoms)
+    side: tuple = (0.0, 0.0)  # m, the soil beside the tire's (left, right) side above its bottom
 
     def mu(self, load):
         """The soil-limited friction for a wheel load (N)."""
@@ -121,6 +129,39 @@ def slip_factor(slip, strength=1.0):
     power `strength` (a class's `slip_sinkage`, 047 S5)."""
     i = min(abs(slip), 0.95)
     return ((1.0 + i) / (1.0 - 0.5 * i)) ** strength
+
+
+def bearing_factors(phi):
+    """Terzaghi's bearing capacity factors (N_c, N_gamma) at friction angle `phi` (rad):
+    N_q = e^(pi tan phi) tan^2(45 deg + phi / 2), N_c = (N_q - 1) cot phi (5.14 at 0),
+    N_gamma = 2 (N_q + 1) tan phi (Vesic)."""
+    t = math.tan(phi)
+    nq = math.exp(math.pi * t) * math.tan(math.pi / 4 + phi / 2) ** 2
+    nc = (nq - 1.0) / t if t > 1e-9 else 2.0 + math.pi
+    return nc, 2.0 * (nq + 1.0) * t
+
+
+def sidewall(p: SoilParams, height, length):
+    """The passive earth pressure's resultant on a tire's side face standing `height` m into
+    the soil over `length` m of contact, N: Bekker's bulldozing resistance per unit width,
+    0.67 c z K_pc + 0.5 gamma z^2 K_pgamma, with K_pc = (N_c - tan phi) cos^2 phi and
+    K_pgamma = (2 N_gamma / tan phi + 1) cos^2 phi (Wong, *Theory of Ground Vehicles*, 2.5),
+    over the face's length; the force on a side pushed into the soil (Ishigami et al. 2007)."""
+    if height <= 0 or length <= 0:
+        return 0.0
+    phi = p.friction_angle
+    nc, ng = bearing_factors(phi)
+    c2, t = math.cos(phi) ** 2, math.tan(phi)
+    k_pc = (nc - t) * c2
+    k_pg = (2.0 * ng / t + 1.0) * c2 if t > 1e-9 else c2
+    return length * (0.67 * p.cohesion * height * k_pc
+                     + 0.5 * p.unit_weight * height * height * k_pg)
+
+
+def contact_length(radius, sinkage):
+    """The chord of a rigid wheel of `radius` sunk `sinkage` m: its contact length, m."""
+    z = min(max(sinkage, 0.0), radius)
+    return 2.0 * math.sqrt(max(0.0, 2.0 * radius * z - z * z))
 
 
 def slip_ratio(spin_speed, speed):
@@ -178,7 +219,8 @@ def wong_reece(p: SoilParams, load, radius, width, spin_speed=0.0, speed=0.0):
                 hi = mid
     theta1 = 0.5 * (lo + hi) if lo < hi else lo
     fz, fx, res, lim = _wr_forces(p, k, radius, width, theta1, u - v, v)
-    return WheelSoil(radius * (1.0 - math.cos(theta1)), max(0.0, res), sign * fx, lim, fz)
+    z = radius * (1.0 - math.cos(theta1))
+    return WheelSoil(z, max(0.0, res), sign * fx, lim, fz, (z, z))  # fresh soil both sides
 
 
 # --- A: the grid -----------------------------------------------------------------------------
@@ -201,6 +243,8 @@ _CANDIDATES = 24
 MAX_SWEEP = 32
 # Sweep positions are this many node spacings apart.
 SWEEP_SPACING = 1.0
+# Points along the contact length where the soil beside a tire is read (side_heights).
+SIDE_POINTS = 5
 
 
 class SoilGrid:
@@ -311,7 +355,26 @@ class SoilGrid:
             for b, sl in blocks:
                 b.sinkage[:], b.shear[:], b.touched[:] = sink[sl], shear[sl], touched[sl]
         n = len(path)
-        return WheelSoil(zb, max(0.0, res / n), thrust / n, limit / n, carried / n)
+        return WheelSoil(zb, max(0.0, res / n), thrust / n, limit / n, carried / n,
+                         self.side_heights(x, y, c, s, contact_length(radius, zb), width, zb))
+
+    def side_heights(self, x, y, c, s, length, width, bottom):
+        """(left, right): how far the soil beside each side of a tire at (x, y), heading
+        (c, s) = (cos, sin), stands above its `bottom` (m below the undisturbed surface): the
+        mean over its contact `length` of the nodes one and two spacings outside its width."""
+        if bottom <= 0 or length <= 0:
+            return (0.0, 0.0)
+        out = []
+        for side in (1.0, -1.0):
+            total, count = 0.0, 0
+            for k in (1, 2):
+                off = side * (width / 2 + k * self.h)
+                for a in np.linspace(-length / 2, length / 2, SIDE_POINTS):
+                    px, py = x + a * c - off * s, y + a * s + off * c
+                    total += max(0.0, bottom - self.depth(px, py))
+                    count += 1
+            out.append(total / count)
+        return tuple(out)
 
     def _patch(self, x, y, c, s, half_len, load, radius, width, spin_speed, speed, dt, ox, oy,
                sink, shear, touched):

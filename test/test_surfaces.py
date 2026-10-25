@@ -10,7 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from swb_isaac_world import surface_layer, surfaces  # noqa: E402
+from swb_isaac_world import soil, surface_layer, surfaces  # noqa: E402
 from swb_isaac_world.surfaces import RoadCondition, Surface, SurfaceError  # noqa: E402
 
 TABLE = surfaces.load_classes()
@@ -488,7 +488,8 @@ class FakeVehicle:
 
     def __init__(self, contacts):
         self.p = SimpleNamespace(tire_friction=1.0, friction_vs_slip=VEHICLE_GRAPH,
-                                 wheel_radius=0.37, wheel_width=0.235, **vars(RIG))
+                                 wheel_radius=0.37, wheel_width=0.235,
+                                 min_lateral_slip_denominator=1.0, **vars(RIG))
         self.contacts = contacts
         self.wheel_states = [SimpleNamespace(slip=0.0, slip_angle=0.0, rotation_speed=0.0)] * 4
         self.written = {}
@@ -716,6 +717,46 @@ class SurfaceLayerTest(unittest.TestCase):
         layer.fresh_soil()
         self.assertEqual(layer.grids, {})
         self.assertIsNone(at(50.0))  # off the zone: no soil
+
+    def test_a_tire_sliding_sideways_in_soil_meets_its_side(self):
+        # 054 T2: sliding to its left, a sunk tire pushes its left side into the soil, which
+        # pushes back to its right; rolling straight it feels none
+        forces = []
+        m = smap([{"id": "mud", "class": "mud_wet", "soil": "grid",
+                   "polygon": [[0, -5], [40, -5], [40, 5], [0, 5]]}],
+                 allow_unvalidated=["mud_wet"])
+        layer = surface_layer.SurfaceLayer(FakeStage({}), m,
+                                           apply_force=lambda *f: forces.append(f))
+        v = FakeVehicle([])
+        speed = 5.0
+
+        def at(x, alpha):
+            v.contacts = [SimpleNamespace(on_ground=True, position=(x, y, 0.0), shape="",
+                                          load=4500.0, direction=(1.0, 0.0, 0.0))
+                          for y in (-0.8, 0.8)] * 2
+            v.wheel_states = [SimpleNamespace(slip=0.05, slip_angle=alpha,
+                                              rotation_speed=speed * 1.05 / 0.37)] * 4
+            forces.clear()
+            layer.begin_step()
+            layer.update(v, speed, 1 / 60)
+
+        x = 10.0
+        for _ in range(30):
+            at(x, 0.0)
+            x += speed / 60
+        self.assertAlmostEqual(forces[0][1][1], 0.0, delta=1e-6)
+        for _ in range(60):  # sliding left (alpha > 0: v_lat along the tire's left)
+            at(x, 0.1)
+            x += speed / 60
+        out, share = layer.soil_under(v)[0]
+        want = soil.sidewall(TABLE["mud_wet"].soil, out.side[0],
+                             soil.contact_length(0.37, out.sinkage))
+        self.assertGreater(want, 50.0)
+        side = layer.side_force[(v.path, 0)]
+        self.assertAlmostEqual(side, -want * math.tanh(0.5 / surface_layer.SIDE_V0), delta=0.05 * want)
+        self.assertAlmostEqual(forces[0][1][1], side * share, delta=1e-6)  # to the tire's right
+        at(x, -0.1)  # the other way: lagged over the class's relaxation length, not a step
+        self.assertLess(layer.side_force[(v.path, 0)], 0.0)
 
     def test_each_wheel_from_its_colliders_label_and_the_zone_under_it(self):
         stage = FakeStage({"/World/env/Road_1": ["Q34442"], "/World/env/Grass": ["Q186131"],
