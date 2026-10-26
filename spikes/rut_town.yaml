@@ -1,0 +1,11 @@
+# spikes/rut_town.py's ground (roadmap 054): Town01 with a wet mud zone on the grid with its own
+# ground over town01_ego_drive's road, 41.6 x 6.4 m (whole 1.6 m tiles), long enough for a
+# crossing at 3 deg. Not a scenario's map.
+allow_unvalidated: [mud_wet]
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones:
+  - id: mud_road
+    class: mud_wet
+    soil: grid
+    ground_z: 0.0
+    polygon: [[136.0, -134.4], [177.6, -134.4], [177.6, -128.0], [136.0, -128.0]]
