@@ -1,0 +1,35 @@
+# Roadmap 053: the reference for `ice`, from the raw data (spikes/ice_curve.py).
+#
+# Schleinin, Savitski, Jimenez, Sandu, Ivanov (2017), "Dataset of tyre tests on ice", Parts
+# 1-3, Zenodo, doi 10.5281/zenodo.1009017 (and records 1009023, 1009025), CC BY 4.0: Virginia
+# Tech's Terramechanics Rig, one passenger tire (not named in the records) on an ice lane, slip
+# pinned in four steps per run, braking and driving, three repeats; 1.5/2.5/3.5 bar,
+# 3.5/5/6.5 kN; and at 2.5 bar and 5 kN under a water film (`WF`) at five conditions labelled
+# t-4, t-2, t0, t2, t4 (the readme does not say; a temperature in deg C is likely). The
+# wheel turns at about 9.5 deg/s: the rig is slow (about 0.05 m/s), so speed effects are not
+# in it. Friction coefficient Fx/Fz per nominal slip, the mean of braking and driving
+# (braking alone a little higher under the film: 0.15 against 0.10 at the peak).
+name: Virginia Tech 2017, a passenger tire on ice, 2.5-3.5 bar, 5 kN
+bare:  # 2.5 and 3.5 bar, 12 runs a slip
+  - [0.01, 0.071]
+  - [0.02, 0.226]
+  - [0.03, 0.221]
+  - [0.05, 0.269]
+  - [0.06, 0.256]
+  - [0.07, 0.264]
+  - [0.09, 0.222]
+  - [0.12, 0.234]
+  - [0.15, 0.229]
+  - [0.20, 0.186]
+water_film:  # 2.5 bar, all five conditions, 30 runs a slip
+  - [0.01, 0.071]
+  - [0.02, 0.087]
+  - [0.03, 0.098]
+  - [0.05, 0.125]
+  - [0.06, 0.113]
+  - [0.07, 0.111]
+  - [0.09, 0.106]
+  - [0.12, 0.114]
+  - [0.15, 0.108]
+  - [0.20, 0.101]
+# The 4 % segments are left out: each opens its run, still settling from the wheel's spin-up.

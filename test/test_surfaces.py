@@ -14,6 +14,10 @@ from swb_isaac_world import soil, surface_layer, surfaces  # noqa: E402
 from swb_isaac_world.surfaces import RoadCondition, Surface, SurfaceError  # noqa: E402
 
 TABLE = surfaces.load_classes()
+# The reference's mu is the car's own tire on dry asphalt (issue 013: the manoeuvre suite's
+# sweeps on the dry pad, 1.13 lengthways, 1.08-1.16 sideways): a tire change that moves the
+# car's peak moves it, so that every other class's mu stays an absolute coefficient.
+ASPHALT = TABLE["asphalt"].mu
 SQUARE = [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0], [0.0, 10.0]]
 VEHICLE_GRAPH = ((0.0, 1.0), (0.1, 1.0), (1.0, 0.8))  # aib's default
 RIG = SimpleNamespace(mass=1760.0, lat_stiff_value=17.0, long_stiff_value=4612.5)
@@ -307,13 +311,19 @@ class RasterTest(unittest.TestCase):
 class FrictionTest(unittest.TestCase):
     dry = RoadCondition()
 
+    def test_the_reference_is_the_cars_tire_on_dry_asphalt(self):
+        self.assertEqual((TABLE.reference, ASPHALT), ("asphalt", 1.12))  # issue 013
+
     def test_dry_reference_ground_is_one(self):
         self.assertAlmostEqual(surfaces.peak_mu(TABLE, Surface("asphalt"), self.dry, 30.0), 1.0)
 
     def test_classes_and_wetness_scale_relative_to_the_reference(self):
         wet = RoadCondition(wetness="wetWithPuddles")
         self.assertAlmostEqual(surfaces.peak_mu(TABLE, Surface("asphalt"), wet, 0.0), 0.75)
-        self.assertAlmostEqual(surfaces.peak_mu(TABLE, Surface("ice"), self.dry, 0.0), 0.1 / 0.85)
+        self.assertAlmostEqual(surfaces.peak_mu(TABLE, Surface("ice"), self.dry, 0.0), 0.265 / ASPHALT)
+        # ice under a water film is 0.47 of bare ice (053, Virginia Tech 2017)
+        self.assertAlmostEqual(surfaces.peak_mu(TABLE, Surface("ice"), RoadCondition(wetness="moist"), 0.0),
+                               0.265 * 0.47 / ASPHALT)
         self.assertAlmostEqual(
             surfaces.peak_mu(TABLE, Surface("asphalt"), RoadCondition(0.5), 0.0), 0.5)
         # a zone's wetness beats the world's
@@ -338,7 +348,7 @@ class FrictionTest(unittest.TestCase):
         self.assertLess(surfaces.peak_mu(TABLE, deep, self.dry, vp), 0.1)
         # a ford on grass soaks in: wet grass, no aquaplaning
         self.assertAlmostEqual(surfaces.peak_mu(TABLE, grass, self.dry, vp),
-                               0.55 * 0.5 / 0.85)
+                               0.55 * 0.5 / ASPHALT)
 
     def test_standing_water_counts_as_at_least_the_level_it_reaches(self):
         s = Surface("asphalt", water_depth=0.004)  # past lowFlooded's 3 mm
@@ -423,7 +433,7 @@ class WheelSurfacesTest(unittest.TestCase):
         ws = self.wheels()
         cond = RoadCondition()
         ws.update(0, Surface("asphalt"), cond, 10.0, 0.0, 0.01)
-        target = 0.6 / 0.85
+        target = 0.6 / ASPHALT
         ws.update(0, Surface("gravel"), cond, 10.0, 0.0, 0.01)  # 0.1 m: half the length
         raw = [ws.mu[0]]
         for _ in range(9):  # 0.9 m more: half the gap left at every 0.1 m
@@ -442,7 +452,7 @@ class WheelSurfacesTest(unittest.TestCase):
         ws = self.wheels()
         ws.update(1, Surface("ice"), RoadCondition(), 5.0, 0.0, 0.01)
         held = ws.update(1, None, RoadCondition(), 5.0, 0.0, 0.01)
-        self.assertAlmostEqual(held, 0.1 / 0.85)
+        self.assertAlmostEqual(held, 0.265 / ASPHALT)
         ws.reset()
         self.assertEqual(ws.update(1, None, RoadCondition(), 5.0, 0.0, 0.01), 1.0)
         self.assertAlmostEqual(ws.update(1, Surface("asphalt"), RoadCondition(), 5.0, 0.0,
@@ -781,7 +791,7 @@ class SurfaceLayerTest(unittest.TestCase):
         under = layer.surfaces_under(v)
         self.assertEqual([s and s.cls for s in under], ["ice", "asphalt", "grass", None])
         self.assertAlmostEqual(v.written[1], 1.0)
-        self.assertLess(v.written[0], 0.2)
+        self.assertLess(v.written[0], 0.4)
         self.assertEqual(v.written[3], 1.0)
         self.assertIsNone(layer.label("/World/env/Building/wall"))  # not ground: unlabelled
         self.assertEqual(layer.label("/World/env/Road_1/m"), "Road")

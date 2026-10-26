@@ -5,6 +5,7 @@
     # MANOEUVRES=brake,step,...: only these manoeuvres; PADS=dry,mud: only these pads
     # ECU='{"esc_enabled": true}': the onboard computers' calibration overrides, every case
     # RIG='{"tire_friction": 0.9}': the PhysX vehicle's (VehicleParams) overrides
+    # PROVING_GROUND=proving_ground_ice.yaml: another ground (the ice pads, 053)
     # ESTIMATOR=truth: the onboard computers read PhysX's speed, slips, sideslip and friction
     #   instead of estimating them (roadmap 055's check that the move alone changed nothing)
     # prints one SPIKE-RESULT json; each case's frames go to <out dir>/<pad>_<manoeuvre>.jsonl
@@ -74,7 +75,7 @@ REPO = os.path.abspath(os.path.join(HERE, "../../.."))
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
     REPO, "play_log/manoeuvres", time.strftime("%Y-%m-%d_%H-%M-%S"))
 GROUND_USD = os.path.join(os.path.dirname(OUT), "proving_ground.usda")
-SURFACES = os.path.join(HERE, "proving_ground.yaml")
+SURFACES = os.path.join(HERE, os.environ.get("PROVING_GROUND", "proving_ground.yaml"))
 EGO_YAML = os.path.join(REPO, "src/autoware_isaac_bridge/src/aib/config/ego.yaml")
 SUBSTEPS, DT = 3, 1 / 60
 FRAME = SUBSTEPS * DT

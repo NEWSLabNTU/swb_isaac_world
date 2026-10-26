@@ -1,0 +1,12 @@
+# spikes/manoeuvres.py's ground with ice (roadmap 053; PROVING_GROUND=proving_ground_ice.yaml):
+# proving_ground.yaml's layout, the wet pad bare ice and the mud pad ice under a water film
+# (`moist`), so PADS=wet,mud runs the manoeuvres on both ices. Not a scenario's map.
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones:
+  - id: ice_pad
+    class: ice
+    polygon: [[80.0, 120.0], [560.0, 120.0], [560.0, 240.0], [80.0, 240.0]]
+  - id: film_pad
+    class: ice
+    wetness: moist
+    polygon: [[80.0, 240.0], [560.0, 240.0], [560.0, 360.0], [80.0, 360.0]]

@@ -75,13 +75,16 @@ blend_length: 0.2
 
 classes:
   asphalt:
-    mu: 0.85
+    # The reference: the Model 3's own tire on dry asphalt, measured on the car (issue 013:
+    # the manoeuvre suite's sweeps, 1.13 lengthways and 1.08-1.16 sideways), so that every
+    # other class's mu, an absolute coefficient, is realised as written.
+    mu: 1.12
     sliding: 0.8
     relaxation: 0.5
     wet: {moist: 0.9, wetWithPuddles: 0.75, lowFlooded: 0.65, highFlooded: 0.55}
     hydroplaning: true
   concrete:
-    mu: 0.8
+    mu: 1.05  # asphalt's times 0.8 / 0.85, the textbook ratio (issue 013)
     sliding: 0.8
     relaxation: 0.5
     wet: {moist: 0.9, wetWithPuddles: 0.75, lowFlooded: 0.65, highFlooded: 0.55}
@@ -159,10 +162,13 @@ classes:
     # undrained tests); the cohesion and Janosi K are a rigid wheel's equivalent of a smooth
     # tire, as sand's friction angle is. Speed: the report's runs were slow, about 0.15 m/s;
     # faster lowers the towed force and raises the pull (its paragraphs 45-47).
+    # The tire curve (053): on clay the pull "does not reach a definite maximum except possibly
+    # at a very high slip"; 20 % slip gives 80-90 % of the pull at 100 % (Wismer 1966, Fig. 3
+    # and paragraph 36; measured here 0.209 at 13.5 %, 0.202 at 20 %). So no fall past 20 %.
     mu: 0.29
-    peak_slip: 0.25
+    peak_slip: 0.2
     peak_slip_angle: 12.0
-    sliding: 0.64
+    sliding: 1.0
     relaxation: 1.2
     soil: {n: 0.7, k_c: 0.0, k_phi: 2828000.0, cohesion: 28370.0, friction_angle: 2.0,
            janosi_k: 0.00141, slip_sinkage: 1.41, rolling_resistance: 0.0403}
@@ -176,9 +182,9 @@ classes:
     # towed, self-propelled and 20 % slips, sinkage -4..+4 %. Two of its three tests ran
     # while the bins' surface was over-wetted (the report's paragraphs 15-18).
     mu: 0.26
-    peak_slip: 0.25
+    peak_slip: 0.2
     peak_slip_angle: 12.0
-    sliding: 0.64
+    sliding: 1.0
     relaxation: 1.2
     soil: {n: 0.7, k_c: 0.0, k_phi: 1167000.0, cohesion: 30450.0, friction_angle: 2.0,
            janosi_k: 0.0194, slip_sinkage: 1.0, rolling_resistance: 0.0861}
@@ -212,10 +218,16 @@ classes:
       (CRREL 93-9, on DTIC, a script cannot fetch)"
     unvalidated: "towed resistance and sinkage fitted to a measured tire (053), traction is still Wong's US snow row: no tire pulling on snow checks it"
   ice:
-    mu: 0.1
-    peak_slip: 0.08
+    # Measured (053): Virginia Tech's tire tests on ice (spikes/references/vt2017_ice.yaml,
+    # spikes/ice_curve.py), braking and driving. Bare ice peaks at 0.265 near 5 % slip and
+    # keeps 0.70 of it at 20 %; under a water film the curve is 0.47 of bare ice's (0.125
+    # at its peak, alike at all five of the film's conditions), so `moist` is the film. The rig
+    # runs at about 0.05 m/s: the fall of the sliding friction with speed (Stribeck) and the
+    # peak's slip angle are not in the data and stay as they were.
+    mu: 0.265
+    peak_slip: 0.05
     peak_slip_angle: 3.0
-    sliding: 0.6
+    sliding: 0.7
     relaxation: 0.5
     stribeck: {speed: 3.0, sliding: 0.4}
-    wet: {moist: 0.6, wetWithPuddles: 0.5}
+    wet: {moist: 0.47}
