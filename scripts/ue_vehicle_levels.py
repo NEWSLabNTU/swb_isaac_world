@@ -125,6 +125,14 @@ def walkers():
             continue
         skel = mesh.get_editor_property("skeleton")
         entry["mesh"] = mesh.get_path_name()
+        # What the blueprint's component wears, its overrides included: CARLA's `_v2`, `_v3`
+        # ... reuse their base's mesh and differ only here (`MI_Female1_v2`), and the export
+        # writes what the level's component wears (044 open item 3).
+        mats = list(sk[0].get_materials())
+        entry["materials"] = [m.get_path_name() if m else None for m in mats]
+        entry["materials_overridden"] = [
+            i for i, (m, d) in enumerate(zip(mats, mesh.get_editor_property("materials")))
+            if m and m != d.get_editor_property("material_interface")]
         # The blueprint's mesh sits below and turned from the actor (capsule centre, x ahead).
         entry["mesh_rel"] = {"z": sk[0].get_editor_property("relative_location").z,
                              "yaw": sk[0].get_editor_property("relative_rotation").yaw}
@@ -145,6 +153,8 @@ def walkers():
             a = unreal.OpenDriveToMap.spawn_actor_with_check_no_collisions(unreal.SkeletalMeshActor, xf)
             c = a.skeletal_mesh_component
             c.set_skeletal_mesh(mesh)
+            for i in entry["materials_overridden"]:
+                c.set_material(i, mats[i])
             c.set_editor_property("animation_mode", unreal.AnimationMode.ANIMATION_SINGLE_NODE)
             data = unreal.SingleAnimationPlayData()
             data.set_editor_property("anim_to_play", anim)
