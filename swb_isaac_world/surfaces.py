@@ -112,6 +112,7 @@ class SurfaceClass:
     hydroplaning: bool = False
     soil: object = None  # soil.SoilParams: the class can be a soil zone's (047 S3)
     unvalidated: str = None  # why its soil parameters are a stand-in (047 D6), or None
+    calibration: str = None  # what its soil parameters were fitted to, measured (053)
     peak_slip: float = None  # longitudinal slip at the tire's peak; None: the rig's
     peak_slip_angle: float = None  # rad, the slip angle at the peak; None: the rig's
     sliding: float = 1.0  # the friction past the peak, sliding, as a share of the peak's
@@ -213,9 +214,16 @@ def parse_classes(data, where="classes"):
         if unvalidated is not None and (not isinstance(unvalidated, str) or not unvalidated):
             problems.append(f"{where}: class {name}: unvalidated is the reason, a string")
             unvalidated = None
+        calibration = c.get("calibration")
+        if calibration is not None and (not isinstance(calibration, str) or not calibration):
+            problems.append(f"{where}: class {name}: calibration is the reference, a string")
+            calibration = None
+        if params is not None and calibration is None:
+            problems.append(f"{where}: class {name}: a soil class names its `calibration:`, "
+                            f"the measurements its soil row was fitted to or why none (053)")
         classes[name] = SurfaceClass(name, float(c["mu"]), tuple(wet),
                                      bool(c.get("hydroplaning", False)), params, unvalidated,
-                                     **tire)
+                                     calibration, **tire)
     reference = data.get("reference", "asphalt")
     if reference not in classes:
         problems.append(f"{where}: reference class {reference!r} is not in the table")

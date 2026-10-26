@@ -1,0 +1,54 @@
+# Roadmap 053 step 2: the reference for `sand_loose`. Read off the plots by eye at 220 dpi, about
+# +-0.5 % DPC and +-1 mm; nothing here was published as numbers.
+#
+# He, R. (2020), "Systematic Tire Testing and Model Parameterization for Tire Traction on Soft
+# Soil", PhD dissertation, Virginia Tech, http://hdl.handle.net/10919/104386 (open).
+# The lab dynamic tire-soil tests of 2017 and 2019 on the Terramechanics Rig: the ASTM
+# Standard Reference Test Tire, a Uniroyal 225/60R16 97S, at 5 kN and 42 psi (290 kPa, a
+# Model 3's), on a loamy sand (84 % sand, 16 % silt, no clay) at its driest and loosest
+# (low initial compaction: cone index 245 kPa, VWC 1.2 %, dry density about 1.72 g/cm^3),
+# the carriage at 6 cm/s, slip pinned per run.
+name: He 2020, SRTT 225/60R16 at 5 kN and 42 psi on dry loamy sand, low compaction
+tire: {radius: 0.335, width: 0.225, load: 5000.0}
+# Fig. 4.42a, 42 psi: the drawbar pull coefficient (drawbar pull / normal load) against the
+# actual slip (zero slip: towed, Fig. 4.42a's 2019 free-rolling point).
+dpc:
+  - [0.0, -0.135]
+  - [0.10, 0.060]
+  - [0.115, 0.110]
+  - [0.137, 0.105]
+  - [0.16, 0.110]
+  - [0.185, 0.100]
+  - [0.205, 0.097]
+  - [0.225, 0.095]
+  - [0.25, 0.103]
+  - [0.27, 0.095]
+  - [0.36, 0.087]
+  - [0.45, 0.090]
+  - [0.54, 0.085]
+  - [0.63, 0.091]
+  - [0.72, 0.086]
+# Fig. 4.44a, 42 psi: rut depth (m) against the same slips. He: rut depth approximates the
+# tire's sinkage up to 20 % slip; above 30 % the rut is markedly shallower than the sinkage
+# (the soil the tire throws back fills it), so those points are lower bounds.
+rut:
+  - [0.0, 0.038]
+  - [0.10, 0.029]
+  - [0.12, 0.028]
+  - [0.14, 0.0275]
+  - [0.165, 0.0305]
+  - [0.185, 0.0315]
+  - [0.205, 0.0345]
+  - [0.225, 0.0395]
+  - [0.25, 0.039]
+  - [0.27, 0.041]
+  - [0.36, 0.0515]
+  - [0.45, 0.0595]
+  - [0.54, 0.067]
+  - [0.63, 0.079]
+  - [0.72, 0.0845]
+# Table 5.8, low compaction: Bekker's row inverted from static ruts of the same tire (kN, m;
+# the units are not stated, these read as a pressure in kPa for a sinkage in m with the
+# flattened contact's 176 mm width): k_c 29.58, k_phi 77.90, n 0.2233. A tire's row, not a
+# plate's: recorded, not used as is.
+bekker_tire: {k_c: 29580.0, k_phi: 77900.0, n: 0.2233, width: 0.176}

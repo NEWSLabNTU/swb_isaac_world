@@ -28,7 +28,9 @@ Outputs, for the surface layer to hand PhysX (the spike's three channels):
                   load, the wheel's soil-limited friction (lateral grip falls with it too: PhysX
                   has one friction per wheel).
   resistance      the soil's pressure on the front of the wheel against the travel (compaction,
-                  N >= 0): a force at the contact (`apply_force_at_pos`).
+                  N >= 0), plus the class's `rolling_resistance` share of the load it carries
+                  (what a rigid wheel lacks: a tire flexing on soft ground, the soil it pushes
+                  ahead; roadmap 053): a force at the contact (`apply_force_at_pos`).
   sinkage         the wheel bottom below the undisturbed surface, m; the rut is in the grid.
   side            (left, right): how far the soil beside each side of the tire stands above
                   its bottom, m. Pushed sideways, a sunk tire drives its side into that soil,
@@ -74,6 +76,8 @@ class SoilParams:
     elastic_k: float = ELASTIC_K
     slip_sinkage: float = 1.0  # Lyasko's slip sinkage to this power (S5's fit; 1: as published)
     unit_weight: float = 16000.0  # N/m^3, the soil's bulk unit weight (sidewall pressure)
+    rolling_resistance: float = 0.0  # resistance beyond compaction, a share of the load (053)
+    slip_sinkage_until: float = 0.95  # the slip past which slip sinkage grows no more (053)
 
     def k(self, width):
         return self.k_c / width + self.k_phi
@@ -85,7 +89,8 @@ def parse_params(d, where="soil"):
     keys = ("n", "k_c", "k_phi", "cohesion", "friction_angle", "janosi_k")
     if not isinstance(d, dict):
         raise SoilError(f"{where}: not a mapping of {', '.join(keys)}")
-    optional = ("elastic_k", "slip_sinkage", "unit_weight")
+    optional = ("elastic_k", "slip_sinkage", "unit_weight", "rolling_resistance",
+                "slip_sinkage_until")
     unknown = set(d) - set(keys) - set(optional)
     if unknown:
         problems.append(f"{where}: unknown key(s) {sorted(unknown)}")
@@ -126,10 +131,11 @@ class WheelSoil:
         return self.traction_limit / load if load > 0 else 0.0
 
 
-def slip_factor(slip, strength=1.0):
+def slip_factor(slip, strength=1.0, until=0.95):
     """Lyasko's slip sinkage: static sinkage times this at longitudinal slip `slip`, to the
-    power `strength` (a class's `slip_sinkage`, 047 S5)."""
-    i = min(abs(slip), 0.95)
+    power `strength` (a class's `slip_sinkage`, 047 S5), the slip held at `until` (a class's
+    `slip_sinkage_until`: no further than its measurement went, 053)."""
+    i = min(abs(slip), until, 0.95)
     return ((1.0 + i) / (1.0 - 0.5 * i)) ** strength
 
 
@@ -218,7 +224,7 @@ def wong_reece(p: SoilParams, load, radius, width, spin_speed=0.0, speed=0.0, *,
         return WheelSoil(0.0, 0.0, 0.0, 0.0, 0.0)
     sign = -1.0 if speed < 0 or (speed == 0 and spin_speed < 0) else 1.0
     v, u = sign * speed, sign * spin_speed
-    k = p.k(width) / slip_factor(slip, p.slip_sinkage) ** p.n
+    k = p.k(width) / slip_factor(slip, p.slip_sinkage, p.slip_sinkage_until) ** p.n
     lo, hi = 0.0, math.acos(1.0 - min(MAX_SINKAGE, radius) / radius)
     if _wr_forces(p, k, radius, width, hi, u - v, v)[0] < load:
         lo = hi
@@ -232,7 +238,8 @@ def wong_reece(p: SoilParams, load, radius, width, spin_speed=0.0, speed=0.0, *,
     theta1 = 0.5 * (lo + hi) if lo < hi else lo
     fz, fx, res, lim = _wr_forces(p, k, radius, width, theta1, u - v, v)
     z = radius * (1.0 - math.cos(theta1))
-    return WheelSoil(z, max(0.0, res), sign * fx, lim, fz, (z, z))  # fresh soil both sides
+    return WheelSoil(z, max(0.0, res) + p.rolling_resistance * fz, sign * fx, lim, fz,
+                     (z, z))  # fresh soil both sides
 
 
 # --- A: the grid -----------------------------------------------------------------------------
@@ -351,7 +358,8 @@ class SoilGrid:
         sub_dt = dt / len(path)
         res = thrust = limit = carried = 0.0
         zb = 0.0
-        k = self.p.k(width) / slip_factor(slip, self.p.slip_sinkage) ** self.p.n
+        k = self.p.k(width) / slip_factor(slip, self.p.slip_sinkage,
+                                                  self.p.slip_sinkage_until) ** self.p.n
         if self.warp is not None:
             zb, res, thrust, limit, carried = (float(v) for v in self.warp.sweep(
                 sink, shear, touched, path, ox, oy, h, c, s, half_len, width, radius, load, k,
@@ -367,7 +375,8 @@ class SoilGrid:
             for b, sl in blocks:
                 b.sinkage[:], b.shear[:], b.touched[:] = sink[sl], shear[sl], touched[sl]
         n = len(path)
-        return WheelSoil(zb, max(0.0, res / n), thrust / n, limit / n, carried / n,
+        return WheelSoil(zb, max(0.0, res / n) + self.p.rolling_resistance * carried / n,
+                         thrust / n, limit / n, carried / n,
                          self.side_heights(x, y, c, s, contact_length(radius, zb), width, zb))
 
     def side_heights(self, x, y, c, s, length, width, bottom):

@@ -142,6 +142,12 @@ class UnvalidatedTest(unittest.TestCase):
         with self.assertRaises(SurfaceError) as cm:
             surfaces.parse_classes({"classes": {"asphalt": {"mu": 1.0, "unvalidated": True}}})
         self.assertIn("unvalidated is the reason, a string", str(cm.exception))
+        row = {"n": 1.0, "k_c": 0.0, "k_phi": 6e6, "cohesion": 0.0, "friction_angle": 15.0,
+               "janosi_k": 0.007}
+        with self.assertRaises(SurfaceError) as cm:  # 053: a soil row says what backs it
+            surfaces.parse_classes({"classes": {"asphalt": {"mu": 1.0},
+                                                "pit": {"mu": 0.3, "soil": row}}})
+        self.assertIn("class pit: a soil class names its `calibration:`", str(cm.exception))
 
 
 class RutsTest(unittest.TestCase):
@@ -183,7 +189,7 @@ class RutsTest(unittest.TestCase):
         self.assertIsNone(layer.save_ruts(Path(self.dir.name) / "ruts" / "runs"))  # nothing yet
         self.drive(layer)
         depth = layer.grids["pit"].depth(10.0, 0.8)
-        self.assertGreater(depth, 0.05)
+        self.assertGreater(depth, 0.01)
         saved = layer.save_ruts(Path(self.dir.name) / "ruts" / "runs")
         self.assertIsNone(layer.save_ruts(Path(self.dir.name) / "ruts" / "runs"))  # once
         (Path(self.dir.name) / "ruts" / "worn.npz").write_bytes(saved.read_bytes())
@@ -579,7 +585,7 @@ class KinematicTest(unittest.TestCase):
         self.drive(layer, "/World/entities/npc", 5.0, 35.0)  # 15 m/s
         g = layer.grids["pit"]
         depths = [g.depth(x, y) for x in np.arange(12.0, 28.0, 0.05) for y in (0.765, -0.765)]
-        self.assertGreater(min(depths), 0.01)  # no gaps between the frames' poses
+        self.assertGreater(min(depths), 0.004)  # no gaps between the frames' poses
         self.assertEqual(g.depth(20.0, 0.0), 0.0)  # between the tracks
         self.assertTrue(layer.driven)
         self.assertFalse(layer.saved)
@@ -695,7 +701,7 @@ class SurfaceLayerTest(unittest.TestCase):
         def at(x):
             v.contacts = [c(on_ground=True, position=(x, y, 0.0), shape="/World/env/Road_1/m",
                             load=4500.0, direction=(1.0, 0.0, 0.0)) for y in (-0.8, 0.8)] * 2
-            v.wheel_states = [SimpleNamespace(slip=0.2, slip_angle=0.0, rotation_speed=speed / 0.8 / 0.37)] * 4
+            v.wheel_states = [SimpleNamespace(slip=0.1, slip_angle=0.0, rotation_speed=speed / 0.9 / 0.37)] * 4
             forces.clear()
             layer.begin_step()
             layer.update(v, speed, 1 / 60)
@@ -709,12 +715,12 @@ class SurfaceLayerTest(unittest.TestCase):
             x += speed / 60
         self.assertEqual(inside[1], 1.0)
         self.assertEqual(len(forces), 4)
-        self.assertLess(forces[0][1][0], -500.0)  # against the travel, at the contact
+        self.assertLess(forces[0][1][0], -250.0)  # against the travel, at the contact
         self.assertEqual(forces[0][2][0], v.contacts[0].position[0])
         mu = inside[0].mu(4500.0)
-        shape = 1.0 / surfaces.graph_at(VEHICLE_GRAPH, 0.2)  # under sand's peak slip (0.3)
+        shape = 1.0 / surfaces.graph_at(VEHICLE_GRAPH, 0.1)  # under sand's peak slip (0.12)
         self.assertAlmostEqual(v.written[0], mu / TABLE["asphalt"].mu * shape, delta=0.02)
-        self.assertGreater(layer.grids["sand_pit"].depth(10.0, 0.8), 0.05)
+        self.assertGreater(layer.grids["sand_pit"].depth(10.0, 0.8), 0.01)
         layer.fresh_soil()
         self.assertEqual(layer.grids, {})
         self.assertIsNone(at(50.0))  # off the zone: no soil

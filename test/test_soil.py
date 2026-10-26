@@ -1,5 +1,6 @@
 """The soil layer's wheel models (047 S3): the survey's trends, on the shipped class table's
-sand and sandy loam, for aib's default wheel (0.37 m radius, 0.235 m wide)."""
+sandy loam and on Wong's dry sand (deep: the mechanics show), for aib's default wheel (0.37 m
+radius, 0.235 m wide)."""
 import math
 import importlib
 import sys
@@ -14,6 +15,10 @@ from swb_isaac_world.soil import SoilError, SoilGrid, tire_slip, wong_reece  # n
 
 TABLE = surfaces.load_classes()
 SAND = TABLE["sand"].soil
+# Wong's dry sand with 047 S5's fit, the table's `sand` until 053 fitted it to a measured tire:
+# a wheel sinks 8 cm in it, so the grid's mechanics show plainly.
+DEEP = soil.parse_params({"n": 1.1, "k_c": 990.0, "k_phi": 1528430.0, "cohesion": 1040.0,
+                          "friction_angle": 28.0, "janosi_k": 0.015, "slip_sinkage": 0.5})
 LOAM = TABLE["dirt"].soil
 MUD = TABLE["mud_wet"].soil  # unvalidated, a wet clay row (047 D6)
 R, B = 0.37, 0.235
@@ -37,27 +42,47 @@ def wr(p, load=4500.0, slip=0.2, speed=5.0):
 
 class ParamsTest(unittest.TestCase):
     def test_the_table_has_soil_for_sand_dirt_snow_and_unvalidated_mud(self):
-        self.assertAlmostEqual(SAND.friction_angle, math.radians(28.0))
+        self.assertAlmostEqual(SAND.friction_angle, math.radians(16.4))  # 053, the tire's
+        self.assertIsNotNone(TABLE["sand_loose"].soil)
         self.assertEqual(LOAM.n, 0.7)
         self.assertIsNotNone(TABLE["snow_loose"].soil)
         self.assertIsNotNone(MUD)
         self.assertIsNotNone(TABLE["mud_wet"].unvalidated)
         self.assertIsNone(TABLE["sand"].unvalidated)
         self.assertIsNone(TABLE["asphalt"].soil)
-        # 047 S5's fit; mud and snow keep Lyasko's factor as published
-        self.assertEqual((SAND.slip_sinkage, LOAM.slip_sinkage, MUD.slip_sinkage), (0.5, 0.65, 1.0))
+        # 053's fit to He 2020 (sand), 047 S5's (dirt); mud and snow keep Lyasko's as published
+        self.assertEqual((SAND.slip_sinkage, LOAM.slip_sinkage, MUD.slip_sinkage), (2.5, 0.65, 1.0))
+        for name, c in TABLE.classes.items():  # every soil class says what backs its row
+            self.assertEqual(c.soil is not None, c.calibration is not None, name)
+        self.assertIn("he2020_srtt_medium", TABLE["sand"].calibration)
 
     def test_mud_grips_least_and_sinks_like_loam(self):
         """Wet clay: cohesive with a low friction angle, so the soil-limited friction is
-        below sand's and loam's while it sinks about as deep as loam, deeper with slip."""
+        below sand's and half loam's while it sinks about as deep as loam, deeper with slip.
+        (Sand's is a road tire's measured on dry sand, 053: low, but above mud's.)"""
         mud, loam, sand = (drive(SoilGrid(p)) for p in (MUD, LOAM, SAND))
-        for other in (loam, sand):
-            self.assertLess(mud["traction_limit"] / mud["load"],
-                            0.5 * other["traction_limit"] / other["load"])
-        self.assertLess(mud["sinkage"], sand["sinkage"])
+        mu = {k: v["traction_limit"] / v["load"] for k, v in
+              (("mud", mud), ("loam", loam), ("sand", sand))}
+        self.assertLess(mu["mud"], 0.5 * mu["loam"])
+        self.assertLess(mu["mud"], mu["sand"])
         self.assertAlmostEqual(mud["sinkage"], loam["sinkage"], delta=0.015)
         self.assertGreater(drive(SoilGrid(MUD), slip=0.5)["sinkage"],
                            drive(SoilGrid(MUD), slip=0.1)["sinkage"])
+
+    def test_rolling_resistance_adds_its_share_of_the_load(self):
+        # 053: what a rigid wheel lacks, a tire flexing in soft ground
+        extra = soil.SoilParams(**{**SAND.__dict__, "rolling_resistance": 0.05})
+        none = soil.SoilParams(**{**SAND.__dict__, "rolling_resistance": 0.0})
+        a, b = drive(SoilGrid(extra), slip=0.0), drive(SoilGrid(none), slip=0.0)
+        self.assertAlmostEqual(a["resistance"] - b["resistance"], 0.05 * a["load"], delta=1.0)
+        self.assertAlmostEqual(wr(extra).resistance - wr(none).resistance,
+                               0.05 * wr(extra).load, delta=1.0)
+
+    def test_slip_sinkage_stops_growing_where_its_measurement_ended(self):
+        self.assertEqual(soil.slip_factor(0.8, 2.5, 0.3), soil.slip_factor(0.3, 2.5, 0.3))
+        self.assertLess(soil.slip_factor(0.2, 2.5, 0.3), soil.slip_factor(0.3, 2.5, 0.3))
+        self.assertEqual(soil.slip_factor(0.99), soil.slip_factor(0.95))  # the default
+        self.assertEqual(SAND.slip_sinkage_until, 0.3)
 
     def test_every_problem_is_listed(self):
         with self.assertRaises(SoilError) as e:
@@ -73,11 +98,11 @@ class ClosedFormTest(unittest.TestCase):
     """C, Wong-Reece on fresh flat soil."""
 
     def test_the_soil_carries_the_load(self):
-        for p in (SAND, LOAM):
+        for p in (DEEP, LOAM):
             self.assertAlmostEqual(wr(p).load, 4500.0, delta=20.0)
 
     def test_sinkage_and_resistance_grow_with_load_and_slip(self):
-        for p in (SAND, LOAM):
+        for p in (DEEP, LOAM):
             loads = [wr(p, load=w) for w in (3000.0, 4500.0, 6000.0)]
             self.assertEqual(loads, sorted(loads, key=lambda o: o.sinkage))
             self.assertEqual(loads, sorted(loads, key=lambda o: o.resistance))
@@ -86,25 +111,25 @@ class ClosedFormTest(unittest.TestCase):
             self.assertLess(slips[0] * 1.3, slips[2])
 
     def test_resistance_outgrows_thrust_as_the_wheel_sinks(self):
-        ratios = [wr(SAND, load=w).resistance / wr(SAND, load=w).thrust
+        ratios = [wr(DEEP, load=w).resistance / wr(DEEP, load=w).thrust
                   for w in (3000.0, 4500.0, 6000.0)]
         self.assertEqual(ratios, sorted(ratios))
 
     def test_soft_soil_grips_less_than_asphalt(self):
-        for p in (SAND, LOAM):
+        for p in (SAND, TABLE["sand_loose"].soil, LOAM, DEEP):
             mu = wr(p).mu(4500.0)
             self.assertLess(mu, TABLE["asphalt"].mu)
-            self.assertGreater(mu, 0.3)
+            self.assertGreater(mu, 0.2)  # sand's measured on a road tire: about 0.25-0.3
 
     def test_a_locked_wheel_pulls_back_and_reversing_mirrors(self):
-        locked = wong_reece(SAND, 4500.0, R, B, 0.0, 5.0, slip=-1.0)
+        locked = wong_reece(DEEP, 4500.0, R, B, 0.0, 5.0, slip=-1.0)
         self.assertLess(locked.thrust, -0.9 * locked.traction_limit)
-        fwd, back = wr(SAND, speed=3.0), wr(SAND, speed=-3.0)
+        fwd, back = wr(DEEP, speed=3.0), wr(DEEP, speed=-3.0)
         self.assertAlmostEqual(fwd.sinkage, back.sinkage)
         self.assertAlmostEqual(fwd.thrust, -back.thrust)
 
     def test_no_load_no_soil(self):
-        self.assertEqual(wr(SAND, load=0.0).sinkage, 0.0)
+        self.assertEqual(wr(DEEP, load=0.0).sinkage, 0.0)
 
 
 class FeatherTest(unittest.TestCase):
@@ -124,9 +149,9 @@ class GridTest(unittest.TestCase):
     """A, the sparse grid."""
 
     def test_sinkage_grows_with_load_and_slip(self):
-        z = [drive(SoilGrid(SAND), load=w)["sinkage"] for w in (3000.0, 4500.0, 6000.0)]
+        z = [drive(SoilGrid(DEEP), load=w)["sinkage"] for w in (3000.0, 4500.0, 6000.0)]
         self.assertEqual(z, sorted(z))
-        z = [drive(SoilGrid(SAND), slip=i)["sinkage"] for i in (0.0, 0.2, 0.5)]
+        z = [drive(SoilGrid(DEEP), slip=i)["sinkage"] for i in (0.0, 0.2, 0.5)]
         self.assertEqual(z, sorted(z))
         # 047 S5: Chrono's SCM (treaded wheel) and CRM sink 1.26-1.41 times deeper at 50 %
         # slip than at none; Lyasko's factor as published gave 1.7
@@ -153,7 +178,7 @@ class GridTest(unittest.TestCase):
         self.assertAlmostEqual(tire_slip(4.0, 0.0, 4.0), 1.0)  # spinning in place
 
     def test_the_rut_stays_and_a_second_pass_sinks_less_and_rolls_easier(self):
-        for p in (SAND, LOAM):
+        for p in (DEEP, LOAM):
             g = SoilGrid(p)
             first = drive(g)
             rut = g.depth(3.0, 0.0)
@@ -164,7 +189,7 @@ class GridTest(unittest.TestCase):
             self.assertLess(second["resistance"], 0.8 * first["resistance"])
 
     def test_resistance_outgrows_thrust_as_the_wheel_sinks(self):
-        r = [drive(SoilGrid(SAND), load=w) for w in (3000.0, 6000.0)]
+        r = [drive(SoilGrid(DEEP), load=w) for w in (3000.0, 6000.0)]
         self.assertLess(r[0]["resistance"] / r[0]["traction_limit"],
                         r[1]["resistance"] / r[1]["traction_limit"])
 
@@ -173,7 +198,7 @@ class GridTest(unittest.TestCase):
         # wheel (exit angle 0) while the grid's nodes there carry the most, so the grid sinks
         # less and pushes less soil (sand 0.72 and 0.53 of it, loam 0.60 and 0.40); S5's
         # calibration against Chrono decides which one to trust. The grip agrees.
-        for p in (SAND, LOAM):
+        for p in (DEEP, LOAM):
             g, c = drive(SoilGrid(p)), wr(p)
             self.assertAlmostEqual(g["load"], 4500.0, delta=45.0)
             for f, lo in (("sinkage", 0.5), ("resistance", 0.35)):
@@ -183,19 +208,19 @@ class GridTest(unittest.TestCase):
     def test_the_physics_rate_does_not_matter(self):
         # D4: the sweep integrates the patch along the path, so 60 Hz reads as 600 Hz.
         for speed in (5.0, 25.0):
-            slow = drive(SoilGrid(SAND), slip=0.1, speed=speed, dt=1 / 60, length=12.0)
-            fast = drive(SoilGrid(SAND), slip=0.1, speed=speed, dt=1 / 600, length=12.0)
+            slow = drive(SoilGrid(DEEP), slip=0.1, speed=speed, dt=1 / 60, length=12.0)
+            fast = drive(SoilGrid(DEEP), slip=0.1, speed=speed, dt=1 / 600, length=12.0)
             self.assertAlmostEqual(slow["sinkage"] / fast["sinkage"], 1.0, delta=0.03)
             self.assertAlmostEqual(slow["resistance"] / fast["resistance"], 1.0, delta=0.08)
 
     def test_it_repeats(self):
-        a, b = SoilGrid(SAND), SoilGrid(SAND)
+        a, b = SoilGrid(DEEP), SoilGrid(DEEP)
         self.assertEqual(drive(a), drive(b))
         for k in a.blocks:
             np.testing.assert_array_equal(a.blocks[k].sinkage, b.blocks[k].sinkage)
 
     def test_blocks_are_allocated_only_where_wheels_went(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         drive(g, length=40.0, speed=10.0)
         # a 0.235 m track along y = 0.013 touches two block rows (block = 0.8 m)
         rows = {by for _, by in g.blocks}
@@ -204,7 +229,7 @@ class GridTest(unittest.TestCase):
         self.assertEqual(g.depth(10.0, 5.0), 0.0)
 
     def test_dirty_blocks_are_handed_out_once(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         drive(g, length=3.0)
         dirty = g.dirty()
         self.assertTrue(dirty)
@@ -212,7 +237,7 @@ class GridTest(unittest.TestCase):
         self.assertEqual(g.dirty(), {})
 
     def test_tile_heights_span_blocks_and_share_edges(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         drive(g, length=3.0, y=0.4)
         n = 32  # a 1.6 m tile
         left, right = g.heights(0, 0, n), g.heights(n, 0, n)
@@ -226,7 +251,7 @@ class GridTest(unittest.TestCase):
         self.assertEqual(len(g.dirty_blocks()), len(keys) - 1)
 
     def test_a_teleport_is_not_swept(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         g.begin_step()
         g.wheel(0, 0.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60, 0.0)
         g.begin_step()
@@ -234,22 +259,22 @@ class GridTest(unittest.TestCase):
         self.assertEqual(g.depth(10.0, 0.0), 0.0)
 
     def test_saved_ruts_load_into_a_fresh_grid(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         first = drive(g)
-        fresh = SoilGrid(SAND)
+        fresh = SoilGrid(DEEP)
         fresh.load(g.save())
         self.assertEqual(fresh.dirty(), {})  # loaded ruts are already in the collision
         self.assertLess(drive(fresh)["resistance"], 0.8 * first["resistance"])
 
     def test_a_dry_run_changes_nothing(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         g.begin_step()
         out = g.wheel(0, 0.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60, 0.0, commit=False)
         self.assertGreater(out.sinkage, 0.0)
         self.assertEqual(g.blocks, {})
 
     def test_too_heavy_bottoms_out(self):
-        g = SoilGrid(SAND)
+        g = SoilGrid(DEEP)
         g.begin_step()
         out = g.wheel(0, 0.0, 0.0, 0.0, 2e6, R, B, 0.0, 0.0, 1 / 60, 0.0)
         self.assertAlmostEqual(out.sinkage, soil.MAX_SINKAGE, places=6)
@@ -269,7 +294,7 @@ class WarpTest(unittest.TestCase):
     bisection against interpolated candidates (nodes within 0.2 mm, measured)."""
 
     def test_the_kernels_agree(self):
-        for p in (SAND, LOAM):
+        for p in (DEEP, LOAM):
             for slip, speed in ((0.2, 5.0), (0.1, 25.0), (-0.3, 8.0)):
                 a, b = SoilGrid(p, kernel="numpy"), SoilGrid(p, kernel="warp")
                 ra = drive(a, slip=slip, speed=speed, length=8.0)
@@ -283,7 +308,7 @@ class WarpTest(unittest.TestCase):
 
     def test_compiled_is_fast(self):
         import time
-        g = SoilGrid(SAND, kernel="warp")
+        g = SoilGrid(DEEP, kernel="warp")
         drive(g, speed=25.0, length=2.0)  # compiled and warm
         t0 = time.perf_counter()
         n = 0
@@ -315,7 +340,7 @@ class SidewallTest(unittest.TestCase):
         f2, f4 = (soil.sidewall(MUD, z, length) for z in (0.02, 0.04))
         self.assertGreater(f4, 2 * f2)  # cohesion linear, weight quadratic in the height
         self.assertAlmostEqual(f4, 209.0, delta=5.0)  # mud at 4 cm: worked by hand
-        self.assertGreater(soil.sidewall(SAND, 0.04, length), 0.0)
+        self.assertGreater(soil.sidewall(DEEP, 0.04, length), 0.0)
 
     def test_fresh_soil_stands_at_the_sinkage_both_sides(self):
         o = wr(MUD)

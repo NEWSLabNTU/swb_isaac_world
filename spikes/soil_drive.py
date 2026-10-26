@@ -112,6 +112,8 @@ def apply_force(path, force, position):
                            PhysicsSchemaTools.sdfPathToInt(path), force, position)
 
 
+if os.environ.get("SOIL_SPIKE_CLASSES"):  # another class table, to try a soil row
+    SURFACES["classes"] = os.environ["SOIL_SPIKE_CLASSES"]
 MAP_DIR = tempfile.mkdtemp()  # kept: the rut sets live beside the map
 path = os.path.join(MAP_DIR, "surfaces.yaml")
 with open(path, "w") as f:
@@ -225,16 +227,20 @@ def hold(lane, length=80.0):
 
 def launch(lane):
     start(lane, ZONE_X0 + 150.0)
-    slips = []
-    for _ in range(60):
+    slips, trace = [], []
+    for i in range(60):
         cmd.velocity, cmd.acceleration = 30.0, 4.0
         frame()
         if state.velocity[0] > 1.0 and veh.wheel_states:
             slips.append(max(w.slip for w in veh.wheel_states[2:]))
+        if i % 5 == 4:
+            trace.append({"v": round(state.velocity[0], 2), "soil": soil_now(),
+                          "rear_slip": [round(w.slip, 3) for w in veh.wheel_states[2:]]
+                          if veh.wheel_states else None})
     return {"v_3s": round(state.velocity[0], 2),
             "max_slip": round(max(slips), 3) if slips else None,
             "mean_slip": round(sum(slips) / len(slips), 3) if slips else None,
-            "soil": soil_now()}
+            "soil": soil_now(), "trace": trace}
 
 
 def brake(lane):
@@ -344,7 +350,14 @@ T0 = time.perf_counter()
 out = {}
 out["kernel"] = "warp" if soil_model.SoilGrid(surfaces.load_classes()["sand"].soil).warp \
     else "numpy"
-ONLY = os.environ.get("SOIL_SPIKE_ONLY")  # "rut" or "mud": just those cases
+ONLY = os.environ.get("SOIL_SPIKE_ONLY")  # "rut", "mud" or "launch": just those cases
+if ONLY == "launch":  # the launches from rest on sand and dirt (053)
+    for lane in ("sand", "dirt"):
+        layer.fresh_soil()
+        progress(f"launch_{lane}")
+        out[f"launch_{lane}"] = launch(lane)
+    print("SPIKE-RESULT " + json.dumps(out), flush=True)
+    os._exit(0)
 GRID = ("asphalt", "sand", "dirt", "mud") if not ONLY else ("mud",) if ONLY == "mud" else ()
 for lane in (*GRID[:3], "sand_cf", "mud") if not ONLY else GRID:
     progress(f"coast_{lane}")

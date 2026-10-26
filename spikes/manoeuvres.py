@@ -33,6 +33,11 @@ up on dry asphalt from x -80, heading +x, and runs the manoeuvre from x 100, ins
 - sweep_long: the tire's curve lengthways: from 40 km/h (30 on mud), ABS off, the
   deceleration asked ramped from 0 to 15 m/s^2 (past what any ground gives) over 1 s,
   steering straight: the wheels lock.
+- rut_cross (mud only; 054's acceptance): a first pass at 20 km/h straight along the lane
+  lays ruts; then the car crosses them at 6 deg on a straight line, from 5 m right of the lane
+  at x 100, the pure-pursuit driver on the line at 20 km/h; then the same crossing on fresh
+  soil. Per crossing: the soil's largest side force on a wheel (T2) and the most the car
+  is pushed off the line and steered against it while its wheels cross the ruts.
 
 The sweeps keep each wheel's tire force, slips, load and the surface layer's stiffness and
 share of the peak (`tires` in a row), and summarise each axle's curve: the most force over load
@@ -78,7 +83,9 @@ EXTENT = (-100.0, 560.0, -40.0, 520.0)  # the ground's x0, x1, y0, y1
 GRID = 10.0
 LANES = {"dry": 15.0, "wet": 135.0, "mud": 255.0, "split": 375.0}
 X_SPAWN, X_TRIGGER = -80.0, 100.0
-MANOEUVRES = ("brake", "step", "brake_turn", "sine", "dlc", "circle", "sweep_lat", "sweep_long")
+MANOEUVRES = ("brake", "step", "brake_turn", "sine", "dlc", "circle", "sweep_lat", "sweep_long",
+              "rut_cross")
+CROSS_ANGLE, CROSS_OFFSET, CROSS_SPEED = math.radians(6.0), 5.0, 20 / 3.6
 STEER_RATE, STEER_MAX = math.radians(5.0), math.radians(35.0)
 BRAKE_RAMP, BRAKE_MAX = 1.0, 15.0
 RADIUS = 40.0
@@ -369,6 +376,76 @@ def run(pad, kind):
     return out
 
 
+def cross_pass(line, label):
+    """One pass at CROSS_SPEED: along y = line(x) from the trigger on (the lane before it),
+    the soil left as it is. Rows with each wheel's soil side force."""
+    ego, cmd = spawn(line(X_SPAWN))
+    rows, t = [], 0.0
+    yaw_prev = yaw_of(ego.state.quat)
+    yaw_u = yaw_prev
+    while t < 120.0:
+        s = ego.state
+        v, x, y = s.velocity[0], s.position[0], s.position[1]
+        yaw = yaw_of(s.quat)
+        yaw_u += (yaw - yaw_prev + math.pi) % (2 * math.pi) - math.pi
+        yaw_prev = yaw
+        hold(cmd, v, CROSS_SPEED)
+        look = max(6.0, v)
+        cmd.tire_angle = pursue(x, y, yaw_u, x + look, line(x + look))
+        if x > 220.0:
+            break
+        world.step({}, SUBSTEPS, DT, False, sim_time=t)
+        t += FRAME
+        r = row(t, label, ego, cmd, yaw_u)
+        r["side_n"] = [round(surface.side_force.get((ego.vehicle.path, i), 0.0))
+                       for i in range(4)]
+        r["line_err"] = round(y - line(x), 3)
+        rows.append(r)
+    world.despawn(handle[0])
+    for _ in range(5):
+        world.step({}, SUBSTEPS, DT, False)
+    return rows
+
+
+def rut_cross(pad):
+    y0 = LANES[pad]
+    surface.fresh_soil()
+    tan = math.tan(CROSS_ANGLE)
+
+    def lane(x):
+        return y0
+
+    def crossing(x):
+        return y0 - CROSS_OFFSET + tan * max(0.0, x - X_TRIGGER)
+
+    rows = {"lay": cross_pass(lane, "lay")}
+    rows["rutted"] = cross_pass(crossing, "rutted")
+    surface.fresh_soil()
+    rows["fresh"] = cross_pass(crossing, "fresh")
+    with open(os.path.join(OUT, f"{pad}_rut_cross.jsonl"), "w") as f:
+        for k in ("lay", "rutted", "fresh"):
+            for r in rows[k]:
+                f.write(json.dumps(r) + "\n")
+    # the window where the car's wheels (tread 1.6 m, base 2.9 m) meet the ruts at y0 +- 0.8
+    x_in = X_TRIGGER + (CROSS_OFFSET - 0.8 - 1.0) / tan
+    x_out = X_TRIGGER + (CROSS_OFFSET + 0.8 + 1.0) / tan + 3.0
+    out = {"case": f"{pad}_rut_cross", "angle_deg": math.degrees(CROSS_ANGLE),
+           "speed_kmh": round(CROSS_SPEED * 3.6, 1), "window_x": [round(x_in, 1), round(x_out, 1)]}
+    for k in ("rutted", "fresh"):
+        w = [r for r in rows[k] if x_in <= r["x"] <= x_out]
+        if not w:
+            out[k] = {"error": "never reached the ruts"}
+            continue
+        tire0 = sum(r["tire"] for r in w) / len(w)
+        out[k] = {"peak_side_force_n": max((abs(f) for r in w for f in r["side_n"]), default=0),
+                  "peak_line_error_m": round(max(abs(r["line_err"]) for r in w), 3),
+                  "peak_yaw_rate": peak(w, "r"),
+                  "tire_angle_swing_deg": round(max(abs(r["tire"] - tire0) for r in w), 2),
+                  "speed_kmh": round(3.6 * sum(r["vx"] for r in w) / len(w), 1)}
+    print(f"{pad}_rut_cross", json.dumps(out), flush=True)
+    return out
+
+
 def peak(rows, key):
     return max((r[key] for r in rows), key=abs) if rows else None
 
@@ -468,10 +545,10 @@ result = {"out": OUT, "rig": RIG, "ecu": ECU, "estimator": "truth" if TRUTH else
           "cases": []}
 for pad in pads:
     for kind in kinds:
-        if pad == "split" and kind != "brake":
+        if pad == "split" and kind != "brake" or kind == "rut_cross" and pad != "mud":
             continue
         try:
-            result["cases"].append(run(pad, kind))
+            result["cases"].append(rut_cross(pad) if kind == "rut_cross" else run(pad, kind))
         except Exception as e:  # noqa: BLE001
             logging.exception("case %s %s", pad, kind)
             result["cases"].append({"case": f"{pad}_{kind}", "error": repr(e)})
