@@ -6,6 +6,7 @@
     # ECU='{"esc_enabled": true}': the onboard computers' calibration overrides, every case
     # RIG='{"tire_friction": 0.9}': the PhysX vehicle's (VehicleParams) overrides
     # PROVING_GROUND=proving_ground_ice.yaml: another ground (the ice pads, 053)
+    # PHYSICS_HZ=240 FRAME_MS=10: the physics rate and the frame (default 60 Hz, 50 ms)
     # ESTIMATOR=truth: the onboard computers read PhysX's speed, slips, sideslip and friction
     #   instead of estimating them (roadmap 055's check that the move alone changed nothing)
     # prints one SPIKE-RESULT json; each case's frames go to <out dir>/<pad>_<manoeuvre>.jsonl
@@ -40,6 +41,9 @@ up on dry asphalt from x -80, heading +x, and runs the manoeuvre from x 100, ins
   exit; the law's command goes in as the vehicle interface's (tire angle, acceleration), and
   between phases the car holds 100 km/h with its front tire along its travel. EGO_RIG names
   another rig in aib's config (`drift_mustang.rig.yaml`).
+- power_over (drift, csb 118): on the 40 m circle at POWER_SPEED (15 m/s, 0.57 g), then full
+  drive for POWER_TIME with the steering held where the circle had it: the sideslip and yaw
+  rate the power gives (a rear-drive car oversteers; with a locked axle, more).
 - rut_cross (mud only; 054's acceptance): a first pass at 20 km/h straight along the lane
   lays ruts; then the car crosses them at 6 deg on a straight line, from 5 m right of the lane
   at x 100, the pure-pursuit driver on the line at 20 km/h; then the same crossing on fresh
@@ -86,15 +90,18 @@ EGO_YAML = os.path.join(REPO, "src/autoware_isaac_bridge/src/aib/config/ego.yaml
 DRIFT_LAW = os.environ.get("DRIFT_LAW", os.path.join(
     REPO, "../autoware-drift/src/control/drift_controller"))
 DRIFT_RADIUS = float(os.environ.get("DRIFT_RADIUS", "100"))
-SUBSTEPS, DT = 3, 1 / 60
-FRAME = SUBSTEPS * DT
+FRAME = float(os.environ.get("FRAME_MS", "50")) / 1000
+SUBSTEPS = max(1, math.ceil(FRAME * float(os.environ.get("PHYSICS_HZ", "60")) - 1e-9))
+DT = FRAME / SUBSTEPS
 G = 9.81
 EXTENT = (-100.0, 560.0, -40.0, 520.0)  # the ground's x0, x1, y0, y1
 GRID = 10.0
 LANES = {"dry": 15.0, "wet": 135.0, "mud": 255.0, "split": 375.0}
 X_SPAWN, X_TRIGGER = -80.0, 100.0
 MANOEUVRES = ("brake", "step", "brake_turn", "sine", "dlc", "circle", "sweep_lat", "sweep_long",
-              "rut_cross", "drift")
+              "rut_cross", "drift", "power_over")
+# power_over: on the circle at POWER_SPEED, then full drive for POWER_TIME with the steering held
+POWER_SPEED, POWER_AFTER, POWER_TIME = 15.0, 4.0, 2.5
 CROSS_ANGLE, CROSS_OFFSET, CROSS_SPEED = math.radians(6.0), 5.0, 20 / 3.6
 STEER_RATE, STEER_MAX = math.radians(5.0), math.radians(35.0)
 BRAKE_RAMP, BRAKE_MAX = 1.0, 15.0
@@ -144,7 +151,8 @@ if os.environ.get("EGO_RIG"):  # another car: ego.yaml with its rig
 if not os.path.exists(GROUND_USD):
     make_ground(GROUND_USD)
 usd = os.path.realpath(GROUND_USD)
-world = IsaacWorld(ego_config=EGO_YAML, ego_domain=int(os.environ.get("STEP_DOMAIN", "77")),
+world = IsaacWorld(physics_dt=DT, ego_config=EGO_YAML,
+                   ego_domain=int(os.environ.get("STEP_DOMAIN", "77")),
                    surface_maps={usd: (SURFACES, (0.0, 0.0, 0.0))})
 for s in world.ego_rig.sensors.values():
     s.enabled = False
@@ -263,7 +271,7 @@ def speeds(pad, kind):
     mud = pad in ("mud", "split")
     return {"brake": 40, "step": 40, "brake_turn": 40, "sine": 50 if mud else 80,
             "dlc": 40 if mud else 80, "circle": 5 * 3.6, "sweep_lat": 10 * 3.6,
-            "sweep_long": 30 if mud else 40, "drift": 100}[kind] / 3.6
+            "sweep_long": 30 if mud else 40, "drift": 100, "power_over": 5 * 3.6}[kind] / 3.6
 
 
 def tires(v, ws, cp):
@@ -318,8 +326,9 @@ def run(pad, kind):
     rows, t, t_go = [], 0.0, None
     yaw_prev = yaw_of(ego.state.quat)
     yaw_u = yaw_prev
-    trigger = X_CIRCLE if kind == "circle" else X_TRIGGER
+    trigger = X_CIRCLE if kind in ("circle", "power_over") else X_TRIGGER
     drift = None
+    held = None  # power_over: the steering held through the power
     while t < 200.0:
         s = ego.state
         v, x, y = s.velocity[0], s.position[0], s.position[1]
@@ -388,6 +397,19 @@ def run(pad, kind):
                     cmd.tire_angle = math.atan2(vy, max(v, 1.0)) + L * r / max(v, 1.0)
                 done = (drift.next_index and drift.phase is law.Phase.CRUISE
                         and drift.t_phase > 3.0) or tm > 40.0
+            elif kind == "power_over":
+                cx, cy = X_CIRCLE, y0 + RADIUS
+                if tm < POWER_AFTER:
+                    phase = "circle"
+                    hold(cmd, v, POWER_SPEED)
+                    th = math.atan2(y - cy, x - cx) + max(6.0, 0.6 * v) / RADIUS
+                    cmd.tire_angle = pursue(x, y, yaw_u, cx + RADIUS * math.cos(th),
+                                            cy + RADIUS * math.sin(th))
+                    held = cmd.tire_angle
+                else:
+                    phase = "power"
+                    cmd.acceleration, cmd.velocity, cmd.tire_angle = 10.0, 60.0, held
+                done = tm > POWER_AFTER + POWER_TIME
             else:  # circle
                 hold(cmd, v, 5.0 + 0.15 * tm)
                 cx, cy = X_CIRCLE, y0 + RADIUS
@@ -552,6 +574,16 @@ def summarise(pad, kind, m, v_go, amp, y0):
         x0 = go["x"]
         errs = [abs(r["y"] - (y0 + dlc_offset(r["x"] - x0))) for r in m]
         out.update(max_path_error_m=round(max(errs), 2), end_speed_kmh=round(3.6 * last["vx"], 1))
+    if kind == "power_over":
+        pw = [r for r in m if r["phase"] == "power"]
+        before = [r for r in m if r["phase"] == "circle"][-10:]
+        if pw and before:
+            out.update(speed_before_kmh=round(3.6 * before[-1]["vx"], 1),
+                       sideslip_before=round(before[-1]["beta"], 2),
+                       peak_sideslip_power=peak(pw, "beta"), peak_yaw_rate_power=peak(pw, "r"),
+                       rear_slip_max=max((max(abs(x) for x in r["slip"][2:]) for r in pw
+                                          if r["slip"]), default=None),
+                       spun=abs(peak(pw, "beta")) > 30.0)
     if kind == "circle":
         cx, cy = X_CIRCLE, y0 + RADIUS
         pts = []
