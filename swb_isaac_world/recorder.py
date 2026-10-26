@@ -1,9 +1,10 @@
 """A run's pictures and soil state for a video (`--record <dir>`, off by default).
 
-The first ego a scenario spawns gets two cameras of its own, under its body so PhysX carries
-them: a dash camera where the rig's `camera6` sits (whether or not that sensor is on), and a
+The first ego a scenario spawns gets three cameras of its own, under its body so PhysX carries
+them: a dash camera where the rig's `camera6` sits (whether or not that sensor is on), a
 low wheel camera behind and outside the rear-left wheel looking forward and down at it, so
-the wheel's sinkage is in the picture. A third stands still beside the first soil zone ahead
+the wheel's sinkage is in the picture, and a chase camera behind and above the car, which
+keeps the car and each ground it crosses in view (a run over several zones). A fourth stands still beside the first soil zone ahead
 of the ego at its spawn, past the zone's far end, looking back along the ego's line: the
 render mesh shows a tile's ruts only once the wheels are 3 m past it (`soil_tiles`), so they
 appear behind the car, which the wheel camera never sees. Every frame the world server
@@ -13,7 +14,7 @@ computers estimated and did (`ecu`: speed, friction, sideslip, ABS and TC factor
 wheel torques). Written by a thread, so
 the frame does not wait for the disk.
 
-    <dir>/<time>-<ego name>/dash/000123.jpg, wheel/..., track/..., state.jsonl
+    <dir>/<time>-<ego name>/dash/000123.jpg, wheel/..., chase/..., track/..., state.jsonl
 
 Not for runs that are judged: more render products cost frame time, and each new one keeps a
 little memory after it is gone (docs/issues/003).
@@ -36,6 +37,11 @@ WHEEL_EYE = (-1.5, 1.85, 0.85)
 WHEEL_AT = (-0.2, 0.83, 0.0)
 WHEEL_FOV = 70.0
 REAR_LEFT = 2  # aib's WHEELS order
+# The chase camera in base_link: behind the car, up and to its left, looking ahead at the
+# ground just past its nose, so the car and every ground it crosses stay in the picture.
+CHASE_EYE = (-7.5, 3.0, 3.0)
+CHASE_AT = (3.0, 0.0, 0.3)
+CHASE_FOV = 60.0
 # The trackside camera: past the zone's far end and to the right of the ego's line, m.
 TRACK_BEYOND, TRACK_SIDE, TRACK_HEIGHT, TRACK_FOV = 3.0, 2.6, 1.3, 60.0
 
@@ -83,7 +89,7 @@ class Recorder:
         self.ego = ego
         self.stage = stage
         self.dir = os.path.join(root, time.strftime("%Y-%m-%d_%H-%M-%S") + f"-{name}")
-        for d in ("dash", "wheel", "track"):
+        for d in ("dash", "wheel", "chase", "track"):
             os.makedirs(os.path.join(self.dir, d), exist_ok=True)
         self.state = open(os.path.join(self.dir, "state.jsonl"), "w")
         w, h = SIZE
@@ -107,7 +113,11 @@ class Recorder:
         wheel.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*WHEEL_EYE))
         wheel.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
             Gf.Quatd(*_look_at(WHEEL_EYE, WHEEL_AT)))
-        cams = [("dash", dash), ("wheel", wheel)]
+        chase = camera(f"{ego.path}/rec_chase", CHASE_FOV)
+        chase.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*CHASE_EYE))
+        chase.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Quatd(*_look_at(CHASE_EYE, CHASE_AT)))
+        cams = [("dash", dash), ("wheel", wheel), ("chase", chase)]
         track = self._trackside(stage, ego, surface, camera)
         if track is not None:
             cams.append(("track", track))

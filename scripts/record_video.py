@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""A recorded run (`--record`, `recorder.py`) as one video: the dash camera and the trackside
-camera at the soil zone side by side, the wheel camera inset in the trackside one (or beside
-the dash camera when there is no trackside one), the ego's state, what its onboard computers
+"""A recorded run (`--record`, `recorder.py`) as one video: the dash camera and, beside it,
+the trackside camera at the soil zone or the chase camera (`--right`), the wheel camera inset
+in it (or beside the dash camera when there is neither), the ego's state, what its onboard computers
 estimated (speed, friction, each wheel's slip) and did (ABS, TC), and each wheel's ground below.
 
     scripts/record_video.py <record dir>/<time>-<ego> [out.mp4] [--from T] [--to T] [--title S]
+        [--right track|chase|wheel]
 
 Frames are the world server's (20 a second of simulated time), so the video runs at the
 scenario's own speed whatever the run's real-time factor was. System Python with Pillow and
@@ -55,6 +56,10 @@ def main():
     ap.add_argument("--from", dest="t_from", type=float, default=None)
     ap.add_argument("--to", dest="t_to", type=float, default=None)
     ap.add_argument("--title", default="")
+    ap.add_argument("--right", choices=("track", "chase", "wheel"), default=None,
+                    help="the right-hand picture: the trackside camera (the default when the "
+                         "run has one), the chase camera (a run over several zones) or the "
+                         "wheel camera")
     a = ap.parse_args()
     rows = [json.loads(line) for line in open(os.path.join(a.run, "state.jsonl"))]
     rows = [r for r in rows if (a.t_from is None or r["t"] >= a.t_from)
@@ -63,8 +68,11 @@ def main():
     if not rows:
         raise SystemExit("no frames in that window")
     out = a.out or os.path.join(a.run, "run.mp4")
-    track = os.path.isdir(os.path.join(a.run, "track")) and \
-        bool(os.listdir(os.path.join(a.run, "track")))
+    def has(kind):
+        return os.path.isdir(os.path.join(a.run, kind)) and bool(os.listdir(os.path.join(a.run, kind)))
+    right = a.right or ("track" if has("track") else "wheel")
+    if not has(right):
+        raise SystemExit(f"the run has no {right} pictures")
     ts = [r["t"] for r in rows]
     speed = [3.6 * r["speed"] for r in rows]
     sink = [max((w.get("sinkage_cm") or 0.0) for w in r["wheels"]) for r in rows]
@@ -79,13 +87,14 @@ def main():
         frame.paste(pic("dash"), (0, 0))
         d = ImageDraw.Draw(frame)
         labels = [(10, 10, "dash camera")]
-        if track:
-            frame.paste(pic("track"), (W, 0))
+        if right != "wheel":
+            frame.paste(pic(right), (W, 0))
             iw, ih = W * 3 // 8, H * 3 // 8
             ix, iy = W + 12, H - ih - 12  # over the sidewalk, clear of the car
             frame.paste(pic("wheel").resize((iw, ih)), (ix, iy))
             d.rectangle((ix - 2, iy - 2, ix + iw + 1, iy + ih + 1), outline=FG, width=2)
-            labels += [(W + 10, 10, "trackside, soil zone"), (ix + 6, iy + 6, "rear-left wheel")]
+            labels += [(W + 10, 10, "trackside, soil zone" if right == "track" else "chase camera"),
+                       (ix + 6, iy + 6, "rear-left wheel")]
         else:
             frame.paste(pic("wheel"), (W, 0))
             labels.append((W + 10, 10, "rear-left wheel"))
