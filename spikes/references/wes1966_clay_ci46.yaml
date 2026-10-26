@@ -1,0 +1,70 @@
+# Roadmap 053/054: a measured reference for a firmer wet clay: CI 46-47 (about 320 kPa),
+# 890 lb (3.96 kN), 15 % deflection, first pass. Just above the 35-45 asked for: at 890 lb and
+# 15 % no test between CI 33 and 45 was powered (C209, CI 40, was towed only; below).
+#
+# Wismer, R. D. (1966), "Performance of Soils Under Tire Loads, Report 3: Tests in Clay
+# Through November 1962", Technical Report No. 3-666, U.S. Army Engineer Waterways Experiment
+# Station (WES), Vicksburg, Mississippi, February 1966. Public domain; scanned at
+# https://upload.wikimedia.org/wikipedia/commons/0/0f/Performance_of_soils_under_tire_loads-_Report_3-_Tests_in_clay_through_November_1962_-_USACE-p266001coll1-3149.pdf
+# (local copy data/terramechanics/wes_tr3-666_report3_clay.pdf; the page numbers below are the
+# PDF's).
+# A single 9.00-14 2-PR smooth (treadless) bias tire in a soil bin of extremely nonsensitive fat
+# clay at 90-100 % saturation (mean 95 %), compacted with a rubber-tired roller: a
+# load-independent, frictionless (phi ~ 0) soil. Cone index (CI) is the WES cone index, psi on
+# the cone's base area (1 psi = 6.895 kPa); tests before C124 used a 1 sq in cone, later ones the
+# standard 0.5 sq in cone, which reads about 5 % higher; the report treats them as equal (para
+# 22). CI here is the average 0- to 6-in. layer, first pass (Table 2, and W/CI in Tables 3-6).
+# FIRST PASS ONLY, 15 % tire deflection, 890 lb nominal. Table 1 (p. 37), 890 lb at 15 %:
+# tire 8A-1503 (tests C7-C112) 40.2 psi, rolling radius 1.081 ft, unloaded section width
+# 8.82 in, contact pressure 36.78 psi; tire 9A-1503 (C115-C152) 41.6 psi, 1.091 ft, 8.80 in,
+# 38.80 psi. Tests after C152 have no Table 1 row (doubtful which tire). 40-42 psi at 3.96 kN
+# is close to a Model 3's 42 psi at ~4.4 kN; the tire is a 1960s bias ply, narrower (224 mm)
+# and slicker than a passenger radial.
+# How the points were read: typed table values, checked digit by digit against 300 dpi renders
+# (Table 3 towed, p. 43; Table 4 constant slip, p. 47; Table 5 20 % slip, p. 48; Table 6
+# self-propelled, p. 52; Table 2 soil, pp. 39-42), not the OCR. CI = W / (W/CI) of each row.
+# The pull coefficient is P/W, the pull at the axle over the load; the towed rows (Table 3,
+# "all pulls negative") are -Pt/W and sit at slip 0 here as in he2020, their measured slip in
+# the comments. The self-propelled point (Table 6) is the slip at P = 0. No plate gives a
+# pull-slip curve at a stated CI and load: Fig. 3 (p. 27) is a "typical" curve on an arbitrary
+# scale (towed at about -2 % slip, self-propelled near +2 %, a knee near 10 %, still rising at
+# 90 %; no maximum except "possibly at a very high slip", para 36), so only 0, the
+# self-propelled slip and 20 % were measured as numbers. The faired curves of Plates 7, 10, 13
+# and 15 (15 % deflection, 890-lb curve) are quoted as a cross-check, read by pixel at 300 dpi,
+# about +-0.02 P/W, +-5 lb, +-0.1 in.
+# Sinkage (para 28) is computed from the hub movement for the point of the tire directly below
+# the axle: the tire's sinkage, not the rut, and up to 1/4 in. below the true maximum when
+# large. Speed: the standard test speed is not stated in Report 3 (Report 1 has it); Plate 17's
+# lowest speed, about 0.5 fps (0.15 m/s), is presumably it (doubtful). Per Plates 17-18, at our
+# rig's 1 m/s (3.3 fps) the towed force and towed sinkage would be some 15-25 % lower and the
+# pull at 20 % slip some 15-20 % higher than these.
+#
+# Tests: C100 (programed slip, CI 47, an "initial" test, 1 sq in. cone, tire 8A-1503) and C210
+# (constant slip, nominal 20 %, CI 46, a "later" test, tire not in Table 1). Soil, Table 2:
+# C100 moisture 0-1 / 0-6 / 6-12 in. 39.2 / 38.6 / 39.8 %, dry density 80.4 / 79.2 pcf, CI 47
+# (6-12 in.: 53); C210 36.2 / 36.5 / -- %, 82.7 pcf, CI 46 (43).
+# DOUBTFUL: the two tests disagree on sinkage by 1.7x (C210 1.18 in. at 13.5 % slip, C100
+# 0.68 in. at 20 %); Plate 15's faired value at CI 46 is about 0.9 in., between them. And
+# C209 (towed, CI 40, later: -0.137, 1.21 in.) sinks twice as deep as C100 towed; Plate 10
+# faired at CI 46: about 0.75 in.
+name: Wismer 1966 (WES TR 3-666 R3), 9.00-14 2-PR smooth at 890 lb and 40 psi on wet fat clay, CI 46
+tire: {radius: 0.3295, width: 0.224, load: 3959.0}
+# P/W against slip.
+#  0.0:   towed, C100 (Table 3, 922 lb) -0.085, measured at slip -2.0 %. Plate 7 faired at
+#         CI 46: about 80 lb, -0.09.
+#  0.005: self-propelled, C100 (Table 6, 912 lb): P = 0 at 0.5 % slip, 2.5 % above its towed
+#         slip, so the rise is steeper here than measured.
+#  0.135: C210 (Table 4, constant slip, 890 lb, nominal 20 %, measured 13.5 %) 0.209.
+#  0.20:  C100 (Table 5, 901 lb, 20.0 %) 0.202. Plate 13 faired at CI 46: about 0.22.
+dpc:
+  - [0.0, -0.085]
+  - [0.005, 0.0]
+  - [0.135, 0.209]
+  - [0.20, 0.202]
+# Sinkage (m): C100 towed 0.60 in., self-propelled 0.56 in., at 20 % 0.68 in.; C210 at 13.5 %
+# 1.18 in.
+sinkage:
+  - [0.0, 0.0152]
+  - [0.005, 0.0142]
+  - [0.135, 0.0300]
+  - [0.20, 0.0173]

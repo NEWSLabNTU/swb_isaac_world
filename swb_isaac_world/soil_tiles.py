@@ -65,6 +65,7 @@ FEATHER = 1.0
 # wet mud is dark and a little glossy, so its ruts catch the light.
 LOOKS = {"sand": ((0.76, 0.66, 0.48), 0.9), "sand_loose": ((0.82, 0.72, 0.54), 0.95),
          "dirt": ((0.42, 0.31, 0.21), 0.9), "mud_wet": ((0.09, 0.06, 0.035), 0.55),
+         "mud_soft": ((0.07, 0.05, 0.03), 0.45),
          "snow_loose": ((0.92, 0.93, 0.95), 0.6)}
 COLOR = Gf.Vec3f(*LOOKS["sand"][0])
 

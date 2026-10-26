@@ -243,7 +243,8 @@ class SurfaceLayer:
             lx, ly = -dy / n, dx / n  # the tire's left, level
             self.apply_force(vehicle.path, (f * dx + side * lx, f * dy + side * ly, f * dz),
                              contact.position)
-        soil_mu = self.condition.friction_scale * out.mu(contact.load) / table[table.reference].mu
+        soil_mu = self.condition.friction_scale * soil.grip(
+            out, contact.load, table[s.cls].mu, params) / table[table.reference].mu
         return share * soil_mu + (1 - share) * surfaces.peak_mu(table, s, self.condition, speed)
 
     def _sidewall(self, vehicle, i, wheel, out, params, cls, speed, dt):

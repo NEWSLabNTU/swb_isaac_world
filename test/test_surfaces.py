@@ -110,7 +110,7 @@ class MapTest(unittest.TestCase):
                                   "polygon": SQUARE}]})
         for part in ("zoness", "tarmac", "'Sky'", "Bad-Id", "three or more", "used twice",
                      "crosses itself", "sets none", "soaked", "soil needs", "needs a polygon",
-                     "class 'grass' has no soil parameters (soil classes: dirt, mud_wet, sand",
+                     "class 'grass' has no soil parameters (soil classes: dirt, mud_soft, mud_wet, sand",
                      "soil 'deep' is not one of", "ground_z (the ruts' ground) needs soil: grid",
                      "ground_z is a height in metres, not 'low'"):
             self.assertIn(part, msg)
@@ -127,7 +127,7 @@ class UnvalidatedTest(unittest.TestCase):
         self.assertIn("list it in allow_unvalidated", msg)
         m = smap([self.MUD], allow_unvalidated=["mud_wet"])
         self.assertEqual([(z, c) for z, c, _ in m.unvalidated], [("pit", "mud_wet")])
-        self.assertIn("047 D6", m.unvalidated[0][2])
+        self.assertIn("053", m.unvalidated[0][2])
 
     def test_friction_only_mud_and_validated_soil_need_nothing(self):
         m = smap([{"id": "slick", "class": "mud_wet", "polygon": SQUARE},
@@ -406,7 +406,7 @@ class WheelSurfacesTest(unittest.TestCase):
         # PhysX's peak is the rig's per unit friction, times the friction, over the stiffness
         self.assertAlmostEqual(RIG_PEAKS[1] * mu / lat, math.tan(c.peak_slip_angle))
         self.assertAlmostEqual(RIG_PEAKS[0] * mu / lon, c.peak_slip)
-        self.assertLess(lat, 0.3)  # a much softer tire than on asphalt
+        self.assertLess(lat, 0.4)  # a much softer tire than on asphalt
         # wet asphalt: the rig's peak slip kept, so the stiffness falls with the friction
         ws.update(1, Surface("asphalt"), RoadCondition(wetness="wetWithPuddles"), 10.0, 0.0,
                   1 / 60)
@@ -717,7 +717,8 @@ class SurfaceLayerTest(unittest.TestCase):
         self.assertEqual(len(forces), 4)
         self.assertLess(forces[0][1][0], -250.0)  # against the travel, at the contact
         self.assertEqual(forces[0][2][0], v.contacts[0].position[0])
-        mu = inside[0].mu(4500.0)
+        mu = soil.grip(inside[0], 4500.0, TABLE["sand"].mu, TABLE["sand"].soil)
+        self.assertLessEqual(mu, TABLE["sand"].mu)  # held at the measured tire's (issue 012)
         shape = 1.0 / surfaces.graph_at(VEHICLE_GRAPH, 0.1)  # under sand's peak slip (0.12)
         self.assertAlmostEqual(v.written[0], mu / TABLE["asphalt"].mu * shape, delta=0.02)
         self.assertGreater(layer.grids["sand_pit"].depth(10.0, 0.8), 0.01)

@@ -17,8 +17,9 @@ applies it. Cases:
   brake_<lane>   full braking from 15 m/s in the zone (ABS)
   entry          the largest change of the soil's resistance between two substeps on entry
                  at 20 m/s, against the edge blend, and in steady state 10 m on
-  mud (047 D6)   the coast, hold (twice), launch and brake cases in a mud_wet lane, the
-                 class's unvalidated clay row (SOIL_SPIKE_ONLY=mud: those alone)
+  mud (047 D6)   the coast, hold (twice), launch and brake cases in a mud_wet lane
+                 (SOIL_SPIKE_ONLY=mud: those alone; SOIL_SPIKE_MUD_CLASS=mud_soft or another
+                 soil class: that class in the lane, 053)
   rut_fresh, rut_from_set  047 D5: after rut_2 its ruts are saved, then a pass on fresh
                  ground, then the saved set loaded by `swb.ruts` and the same pass again
   rut_1, rut_2   the `sand_rut` lane: sand whose ground is the server's tiles (`ground_z`, a
@@ -66,14 +67,15 @@ def band(y0, y1):
 
 SURFACES = {
     "defaults": {"Road": "asphalt"},
-    "allow_unvalidated": ["mud_wet"],
+    "allow_unvalidated": ["mud_wet", "snow_loose"],
     "zones": [
         {"id": "sand", "class": "sand", "soil": "grid", "polygon": band(6, 14)},
         {"id": "dirt", "class": "dirt", "soil": "grid", "polygon": band(16, 24)},
         {"id": "sand_cf", "class": "sand", "soil": "closed_form", "polygon": band(26, 34)},
         {"id": "sand_rut", "class": "sand", "soil": "grid", "ground_z": 0.0,
          "polygon": [[ZONE_X0, 36], [RUT_X1, 36], [RUT_X1, 44], [ZONE_X0, 44]]},
-        {"id": "mud", "class": "mud_wet", "soil": "grid", "polygon": band(46, 54)},
+        {"id": "mud", "class": os.environ.get("SOIL_SPIKE_MUD_CLASS", "mud_wet"), "soil": "grid",
+         "polygon": band(46, 54)},
     ],
 }
 

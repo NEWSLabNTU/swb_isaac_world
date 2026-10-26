@@ -1,0 +1,20 @@
+# Roadmap 053 step 2: a reference for `snow_loose`, from the report's own numbers (Table 3).
+#
+# Richmond, P. W. (1995), "Motion Resistance of Wheeled Vehicles in Snow", CRREL Report 95-7,
+# US Army Cold Regions Research and Engineering Laboratory (public domain; ROSAP
+# https://rosap.ntl.bts.gov/view/dot/14081, which a script cannot fetch: saved by hand).
+# The CRREL Instrumented Vehicle (CIV) towed at 2-9 km/h, hubs unlocked, through undisturbed
+# fresh snow on a packed base, Keweenaw Research Center, January 1993: its leading (front)
+# Michelin LT 235/85R16 XCH4 at 6.46-7.30 kN, 179 kPa (sets 3, 0122g-j: radius 0.375 m, width
+# 0.256-0.263 m) and 103 kPa (set 4, 0122o-t: 0.365 m, 0.272 m), snow 220 kg/m^3 and
+# 17.8-22.9 cm deep. Means of 19 wheel runs (0122o-l, 37.5 cm deep, left out): depth 20.5 cm
+# (sd 1.5), sinkage 16.0 cm (sd 1.4; measured, from the rut), resistance coefficient 0.074
+# (sd 0.017). Towed only: no slip sweep. The sinkage is the layer's compaction limit, depth
+# times (1 - 220/500) (the report's eq. 1, 15.9 cm predicted with z = h (1 - rho0/rho_f)),
+# so it scales with the snow's depth, which a Bekker row does not know.
+name: Richmond 1995, CIV LT 235/85R16 towed in 20 cm of fresh snow at 220 kg/m^3
+tire: {radius: 0.37, width: 0.265, load: 6900.0}
+dpc:
+  - [0.0, -0.074]
+sinkage:
+  - [0.0, 0.160]

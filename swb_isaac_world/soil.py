@@ -32,6 +32,8 @@ Outputs, for the surface layer to hand PhysX (the spike's three channels):
                   (what a rigid wheel lacks: a tire flexing on soft ground, the soil it pushes
                   ahead; roadmap 053): a force at the contact (`apply_force_at_pos`).
   sinkage         the wheel bottom below the undisturbed surface, m; the rut is in the grid.
+                  At most MAX_SINKAGE, or the class's `sinkage_limit` (a layer on a hard
+                  base, fresh snow: there the base carries what the layer does not).
   side            (left, right): how far the soil beside each side of the tire stands above
                   its bottom, m. Pushed sideways, a sunk tire drives its side into that soil,
                   which resists with its passive earth pressure (`sidewall`, roadmap 054 T2):
@@ -78,9 +80,20 @@ class SoilParams:
     unit_weight: float = 16000.0  # N/m^3, the soil's bulk unit weight (sidewall pressure)
     rolling_resistance: float = 0.0  # resistance beyond compaction, a share of the load (053)
     slip_sinkage_until: float = 0.95  # the slip past which slip sinkage grows no more (053)
+    # m: a layer on a hard base (fresh snow) compacts only so far, its depth times
+    # (1 - its density / the density it compacts to) (Richmond 1995, eq. 1); there the base
+    # carries the rest of the load (053)
+    sinkage_limit: float = MAX_SINKAGE
+
+    def deepest(self):
+        """The deepest a wheel bottom goes in this soil, m."""
+        return min(MAX_SINKAGE, self.sinkage_limit)
 
     def k(self, width):
         return self.k_c / width + self.k_phi
+
+
+POSITIVE = ("n", "janosi_k", "elastic_k", "sinkage_limit")
 
 
 def parse_params(d, where="soil"):
@@ -90,7 +103,7 @@ def parse_params(d, where="soil"):
     if not isinstance(d, dict):
         raise SoilError(f"{where}: not a mapping of {', '.join(keys)}")
     optional = ("elastic_k", "slip_sinkage", "unit_weight", "rolling_resistance",
-                "slip_sinkage_until")
+                "slip_sinkage_until", "sinkage_limit")
     unknown = set(d) - set(keys) - set(optional)
     if unknown:
         problems.append(f"{where}: unknown key(s) {sorted(unknown)}")
@@ -102,9 +115,9 @@ def parse_params(d, where="soil"):
             continue
         v = d[k]
         if not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0 \
-                or (k in ("n", "janosi_k", "elastic_k") and v == 0):
+                or (k in POSITIVE and v == 0):
             problems.append(f"{where}: {k} {v!r} is not a number "
-                            f"{'> 0' if k in ('n', 'janosi_k', 'elastic_k') else '>= 0'}")
+                            f"{'> 0' if k in POSITIVE else '>= 0'}")
             continue
         vals[k] = float(v)
     if "friction_angle" in vals and vals["friction_angle"] >= 90:
@@ -129,6 +142,20 @@ class WheelSoil:
     def mu(self, load):
         """The soil-limited friction for a wheel load (N)."""
         return self.traction_limit / load if load > 0 else 0.0
+
+
+def grip(out, load, mu, params):
+    """The friction of a wheel carrying `load` (N) on this soil (`out`, its WheelSoil):
+    the soil's traction limit over the load, held at the class's `mu`, the measured tire's
+    gross traction (pull at its peak plus its towed resistance): a tire does not shear the
+    soil under it to its strength (issue 012). On a layer with a `sinkage_limit`, what the
+    base carries grips at `mu` too."""
+    if load <= 0:
+        return 0.0
+    limit = out.traction_limit
+    if params.sinkage_limit < MAX_SINKAGE:
+        limit += max(0.0, load - out.load) * mu
+    return min(limit / load, mu)
 
 
 def slip_factor(slip, strength=1.0, until=0.95):
@@ -225,7 +252,7 @@ def wong_reece(p: SoilParams, load, radius, width, spin_speed=0.0, speed=0.0, *,
     sign = -1.0 if speed < 0 or (speed == 0 and spin_speed < 0) else 1.0
     v, u = sign * speed, sign * spin_speed
     k = p.k(width) / slip_factor(slip, p.slip_sinkage, p.slip_sinkage_until) ** p.n
-    lo, hi = 0.0, math.acos(1.0 - min(MAX_SINKAGE, radius) / radius)
+    lo, hi = 0.0, math.acos(1.0 - min(p.deepest(), radius) / radius)
     if _wr_forces(p, k, radius, width, hi, u - v, v)[0] < load:
         lo = hi
     else:
@@ -364,7 +391,7 @@ class SoilGrid:
             zb, res, thrust, limit, carried = (float(v) for v in self.warp.sweep(
                 sink, shear, touched, path, ox, oy, h, c, s, half_len, width, radius, load, k,
                 self.p, (spin_speed - speed) * sub_dt, self.step_id,
-                1.0 if speed >= 0 else -1.0, MAX_SINKAGE))
+                1.0 if speed >= 0 else -1.0, self.p.deepest()))
         else:
             for px, py in path:
                 zb, r_, t_, l_, f_ = self._patch(px, py, c, s, half_len, load, radius, width,
@@ -429,13 +456,13 @@ class SoilGrid:
             d = np.maximum(zb[:, None] - rim - sp, 0.0)
             return np.minimum(p.elastic_k * d, k * (sp + d) ** p.n).sum(axis=1) * area
 
-        lo, hi, flo, fhi = 0.0, MAX_SINKAGE, 0.0, load
+        lo, hi, flo, fhi = 0.0, p.deepest(), 0.0, load
         for _ in range(2):
             zs = np.linspace(lo, hi, _CANDIDATES)
             f = carried(zs)
             above = np.nonzero(f >= load)[0]
             if len(above) == 0:
-                lo = hi = MAX_SINKAGE  # bottomed: the chassis takes the rest
+                lo = hi = p.deepest()  # bottomed: the chassis, or the layer's base, takes the rest
                 break
             m = above[0]
             if m == 0:

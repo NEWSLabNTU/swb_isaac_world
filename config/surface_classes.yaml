@@ -4,7 +4,9 @@
 # Per class:
 #   mu     peak tire-road friction, dry. Written to a wheel relative to `reference`'s:
 #          on dry `reference` a wheel keeps the rig's own tire_friction, so a map whose roads
-#          are all asphalt drives exactly as one with no surface map.
+#          are all asphalt drives exactly as one with no surface map. On a soil zone the
+#          soil's traction limit, held at `mu` (issue 012): for a fitted soil class `mu` is
+#          the measured tire's gross traction, its pull at the peak plus its towed resistance.
 #   wet    friction factor per OpenSCENARIO wetness (dry is 1.0); a missing level takes the
 #          next drier one's.
 #   The tire's curve on this ground (roadmap 054 T1; docs/roadmap/054, "T1 in detail"):
@@ -28,8 +30,11 @@
 #          N/m^3 (the soil's bulk weight, for the pressure on a sunk tire's side, 054 T2;
 #          default 16000), rolling_resistance (resistance beyond the rigid wheel's
 #          compaction, a share of the load: a tire flexing in soft ground; default 0, 053)
-#          and slip_sinkage_until (the slip past which slip sinkage grows no more: where its
-#          measurement ended; default 0.95, 053) optional. A class without them cannot be a soil zone's.
+#          slip_sinkage_until (the slip past which slip sinkage grows no more: where its
+#          measurement ended; default 0.95, 053) and sinkage_limit (m: a layer on a hard base,
+#          fresh snow, compacts no deeper than its depth times (1 - its density / the density
+#          it compacts to); default the grid's 0.3, 053) optional. A class without them cannot
+#          be a soil zone's.
 #   calibration  for a soil class, required: the measurements its soil row was fitted to
 #          (roadmap 053, spikes/fit_reference.py against spikes/references/), or where the
 #          row comes from and why nothing measured backs it yet. Dirt's, mud's and snow's
@@ -116,7 +121,7 @@ classes:
     # Bekker-Janosi takes the soil's full shear, the tire does not. Slip sinkage: 2.5, the
     # least that holds the tolerance (the free fit's 3.9), and no more past 30 % slip, where
     # the measurement ends: carried on, a wheel spinning up from rest dug the car in (053).
-    mu: 0.3
+    mu: 0.265
     peak_slip: 0.12
     peak_slip_angle: 14.0
     sliding: 0.95
@@ -134,7 +139,7 @@ classes:
     # sinkage -26..+24 % to 27 %, the reference's rut a lower bound above). The two points
     # just outside: the peak at 11.5 % slip (ours 0.085 against 0.11, its error bar spans
     # 0.06-0.16) and the towed rut (deeper than at 10 % slip, which a Bekker wheel cannot be).
-    mu: 0.26
+    mu: 0.245
     peak_slip: 0.12
     peak_slip_angle: 14.0
     sliding: 0.95
@@ -146,19 +151,39 @@ classes:
     calibration: "He 2020 (Virginia Tech), SRTT 225/60R16 at 5 kN and 42 psi on dry loamy sand,
       low compaction; spikes/references/he2020_srtt_low.yaml"
   mud_wet:
-    mu: 0.3
+    # Wet fat clay (cone index 46, 320 kPa; 37-39 % moisture), the firmer of the two muds: a
+    # rear-drive car drives through it. Measured: WES's 9.00-14 smooth tire at 890 lb and 40
+    # psi on it (Wismer 1966, 053 step 3): drawbar pull within -7..+6 %, towed 0 %. Sinkage
+    # +9..+27 %, two points outside: they are two tests 1.7 times apart (30 mm at 13.5 % slip,
+    # 17 mm at 20 %), ours between them. Saturated clay has no friction angle (the report's
+    # undrained tests); the cohesion and Janosi K are a rigid wheel's equivalent of a smooth
+    # tire, as sand's friction angle is. Speed: the report's runs were slow, about 0.15 m/s;
+    # faster lowers the towed force and raises the pull (its paragraphs 45-47).
+    mu: 0.29
     peak_slip: 0.25
     peak_slip_angle: 12.0
     sliding: 0.64
     relaxation: 1.2
-    # Wong's wettest clay row (clayey soil, Thailand, 55 % moisture), Janosi K at the soft
-    # end of its range. No published real-time mud model exists (survey): no pore water, no
-    # rate dependence, no clogging; the grid's slip sinkage is the only dig-in.
-    soil: {n: 0.7, k_c: 16030.0, k_phi: 1262530.0, cohesion: 2070.0, friction_angle: 10.0,
-           janosi_k: 0.025}
-    unvalidated: "a wet clay row stands in for mud, nothing measured on mud backs it; 047 D6"
-    calibration: "none measured: Wong's clayey soil at 55 % moisture; WES TR 3-666 Report 3
-      (Wismer 1966, a 9.00-14 tire on wet fat clay) to obtain, 053 step 2"
+    soil: {n: 0.7, k_c: 0.0, k_phi: 2828000.0, cohesion: 28370.0, friction_angle: 2.0,
+           janosi_k: 0.00141, slip_sinkage: 1.41, rolling_resistance: 0.0403}
+    calibration: "Wismer 1966 (WES TR 3-666 Report 3), 9.00-14 2-PR smooth at 890 lb and 40
+      psi on wet fat clay, cone index 46; spikes/references/wes1966_clay_ci46.yaml"
+    unvalidated: "drawbar pull fitted to a measured tire (053), its sinkage between two tests 1.7 times apart, outside +-25 % of each"
+  mud_soft:
+    # The same clay wetter (cone index 25, 170 kPa; 43-45 % moisture): a rear-drive car on it
+    # pulls less than its front wheels resist, so it stalls, as on sand_loose. Measured: the
+    # same tire (Wismer 1966, tests C62, C68, C149), within tolerance: pull -0..+0 % at the
+    # towed, self-propelled and 20 % slips, sinkage -4..+4 %. Two of its three tests ran
+    # while the bins' surface was over-wetted (the report's paragraphs 15-18).
+    mu: 0.26
+    peak_slip: 0.25
+    peak_slip_angle: 12.0
+    sliding: 0.64
+    relaxation: 1.2
+    soil: {n: 0.7, k_c: 0.0, k_phi: 1167000.0, cohesion: 30450.0, friction_angle: 2.0,
+           janosi_k: 0.0194, slip_sinkage: 1.0, rolling_resistance: 0.0861}
+    calibration: "Wismer 1966 (WES TR 3-666 Report 3), 9.00-14 2-PR smooth at 890 lb and 40
+      psi on wet fat clay, cone index 25; spikes/references/wes1966_clay_ci25.yaml"
   snow_packed:
     mu: 0.2
     peak_slip: 0.15
@@ -172,12 +197,20 @@ classes:
     peak_slip_angle: 12.0
     sliding: 1.0
     relaxation: 1.5
-    # snow (Wong's US snow)
-    soil: {n: 1.6, k_c: 4370.0, k_phi: 196720.0, cohesion: 1030.0, friction_angle: 19.7,
-           janosi_k: 0.04}
-    calibration: "none measured: Wong's US snow row; Lee et al. 2012 (paywalled) or CRREL's
-      reports (public, a browser fetches them) to obtain, 053 step 2"
-    unvalidated: "Wong's US snow row with a typical Janosi K; no tire on snow checks it; 052 step 3, 053"
+    # Fresh snow on a hard base (053): the CIV's light-truck tire towed through it (Richmond
+    # 1995, CRREL 95-7). Its sinkage is the layer's compaction limit, depth times
+    # (1 - density / 500 kg/m^3), and k_phi fitted to the towed resistance there fits both of
+    # the report's snows (220 kg/m^3 in 20 cm: 0.074 at 16 cm; 110 kg/m^3 in 15 cm: 0.035 at
+    # 11.9 cm) within 1 %: 7.0e5 and 7.05e5. This class is the second, 15 cm of light snow;
+    # a deeper snow is a larger `sinkage_limit`. Shear (c, phi, K) stays Wong's US snow row:
+    # the report tows, it measures no traction.
+    soil: {n: 1.6, k_c: 4370.0, k_phi: 700000.0, cohesion: 1030.0, friction_angle: 19.7,
+           janosi_k: 0.04, sinkage_limit: 0.119}
+    calibration: "Richmond 1995, CRREL Report 95-7, Table 3 set 7 (spikes/references/
+      richmond1995_civ_snow110.yaml; set 3-4 in richmond1995_civ_snow220.yaml): towed
+      resistance and sinkage of a light-truck tire in fresh snow; traction not measured
+      (CRREL 93-9, on DTIC, a script cannot fetch)"
+    unvalidated: "towed resistance and sinkage fitted to a measured tire (053), traction is still Wong's US snow row: no tire pulling on snow checks it"
   ice:
     mu: 0.1
     peak_slip: 0.08

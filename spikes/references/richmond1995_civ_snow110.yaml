@@ -1,0 +1,11 @@
+# Roadmap 053 step 2: a second, lighter snow from the same report as
+# richmond1995_civ_snow220.yaml (CRREL Report 95-7, Table 3, set 7, 0126g-i): the CIV's leading
+# tire at 179 kPa (radius 0.375 m, width 0.256-0.263 m), 6.76-7.20 kN, towed at 5-9.5 km/h
+# through snow of 110 kg/m^3, 12.7-17.6 cm deep. Means of 6 wheel runs: depth 15.4 cm (sd 1.9),
+# sinkage 11.9 cm (sd 2.4), resistance coefficient 0.035 (sd 0.012). Towed only.
+name: Richmond 1995, CIV LT 235/85R16 towed in 15 cm of fresh snow at 110 kg/m^3
+tire: {radius: 0.375, width: 0.26, load: 6950.0}
+dpc:
+  - [0.0, -0.035]
+sinkage:
+  - [0.0, 0.119]

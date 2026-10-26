@@ -48,26 +48,31 @@ class ParamsTest(unittest.TestCase):
         self.assertIsNotNone(TABLE["snow_loose"].soil)
         self.assertIsNotNone(MUD)
         self.assertIsNotNone(TABLE["mud_wet"].unvalidated)
+        self.assertIsNone(TABLE["mud_soft"].unvalidated)
         self.assertIsNone(TABLE["sand"].unvalidated)
         self.assertIsNone(TABLE["asphalt"].soil)
-        # 053's fit to He 2020 (sand), 047 S5's (dirt); mud and snow keep Lyasko's as published
-        self.assertEqual((SAND.slip_sinkage, LOAM.slip_sinkage, MUD.slip_sinkage), (2.5, 0.65, 1.0))
+        # 053's fits to He 2020 (sand) and Wismer 1966 (mud), 047 S5's (dirt)
+        self.assertEqual((SAND.slip_sinkage, LOAM.slip_sinkage, MUD.slip_sinkage), (2.5, 0.65, 1.41))
         for name, c in TABLE.classes.items():  # every soil class says what backs its row
             self.assertEqual(c.soil is not None, c.calibration is not None, name)
         self.assertIn("he2020_srtt_medium", TABLE["sand"].calibration)
 
-    def test_mud_grips_least_and_sinks_like_loam(self):
-        """Wet clay: cohesive with a low friction angle, so the soil-limited friction is
-        below sand's and half loam's while it sinks about as deep as loam, deeper with slip.
-        (Sand's is a road tire's measured on dry sand, 053: low, but above mud's.)"""
-        mud, loam, sand = (drive(SoilGrid(p)) for p in (MUD, LOAM, SAND))
-        mu = {k: v["traction_limit"] / v["load"] for k, v in
-              (("mud", mud), ("loam", loam), ("sand", sand))}
-        self.assertLess(mu["mud"], 0.5 * mu["loam"])
-        self.assertLess(mu["mud"], mu["sand"])
-        self.assertAlmostEqual(mud["sinkage"], loam["sinkage"], delta=0.015)
-        self.assertGreater(drive(SoilGrid(MUD), slip=0.5)["sinkage"],
-                           drive(SoilGrid(MUD), slip=0.1)["sinkage"])
+    def test_the_wetter_mud_sinks_deeper_and_holds_a_rear_drive_car(self):
+        """Wet clay (053, Wismer 1966): its grip is cohesion's, so it does not fall with the
+        load as sand's friction does; the wetter clay sinks deeper and resists more, so its
+        driven wheels at 20 % slip pull less than the undriven ones resist (a rear-drive car
+        stalls, as on sand_loose), while on the firmer one they pull more. Both sink deeper
+        with slip."""
+        soft_p = TABLE["mud_soft"].soil
+        firm, soft = drive(SoilGrid(MUD)), drive(SoilGrid(soft_p))
+        self.assertGreater(soft["sinkage"], 1.5 * firm["sinkage"])
+        for p, stalls in ((MUD, False), (soft_p, True)):
+            towed = drive(SoilGrid(p), slip=0.0)
+            pull = (firm if p is MUD else soft)
+            net = (pull["thrust"] - pull["resistance"]) - towed["resistance"]
+            self.assertEqual(net < 0, stalls)
+            self.assertGreater(drive(SoilGrid(p), slip=0.5)["sinkage"],
+                               drive(SoilGrid(p), slip=0.1)["sinkage"])
 
     def test_rolling_resistance_adds_its_share_of_the_load(self):
         # 053: what a rigid wheel lacks, a tire flexing in soft ground
@@ -280,6 +285,31 @@ class GridTest(unittest.TestCase):
         self.assertAlmostEqual(out.sinkage, soil.MAX_SINKAGE, places=6)
         self.assertLess(out.load, 2e6)
 
+    def test_grip_is_held_at_the_measured_tires_and_a_layers_base_grips(self):
+        # issue 012: a tire does not shear the soil to its strength; on a layer's base the
+        # base's share of the load grips at the class's mu too
+        out = soil.WheelSoil(0.02, 100.0, 0.0, 2000.0, 4000.0)
+        self.assertAlmostEqual(soil.grip(out, 4000.0, 0.3, DEEP), 0.3)
+        self.assertAlmostEqual(soil.grip(out, 4000.0, 0.6, DEEP), 0.5)
+        layer = soil.SoilParams(**{**DEEP.__dict__, "sinkage_limit": 0.05})
+        bottomed = soil.WheelSoil(0.05, 100.0, 0.0, 50.0, 1000.0)
+        self.assertAlmostEqual(soil.grip(bottomed, 4000.0, 0.25, layer),
+                               (50.0 + 3000.0 * 0.25) / 4000.0)
+        self.assertAlmostEqual(soil.grip(bottomed, 4000.0, 0.25, DEEP), 50.0 / 4000.0)
+        self.assertEqual(soil.grip(bottomed, 0.0, 0.25, layer), 0.0)
+
+    def test_a_layer_on_a_hard_base_sinks_no_deeper_than_its_limit(self):
+        # 053: fresh snow compacts to its final density and the base carries the rest
+        layer = soil.SoilParams(**{**DEEP.__dict__, "sinkage_limit": 0.05})
+        g = SoilGrid(layer)
+        g.begin_step()
+        out = g.wheel(0, 0.0, 0.0, 0.0, 2e6, R, B, 0.0, 0.0, 1 / 60, 0.0)
+        self.assertAlmostEqual(out.sinkage, 0.05, places=6)
+        self.assertLess(out.load, 2e6)
+        self.assertAlmostEqual(wr(layer, load=2e6).sinkage, 0.05, places=3)
+        self.assertEqual(soil.SoilParams(**{**DEEP.__dict__, "sinkage_limit": 1.0}).deepest(),
+                         soil.MAX_SINKAGE)
+
 
 try:
     importlib.import_module("swb_isaac_world.soil_warp")  # Isaac's Python has warp
@@ -339,7 +369,7 @@ class SidewallTest(unittest.TestCase):
         self.assertEqual(soil.sidewall(MUD, 0.0, length), 0.0)
         f2, f4 = (soil.sidewall(MUD, z, length) for z in (0.02, 0.04))
         self.assertGreater(f4, 2 * f2)  # cohesion linear, weight quadratic in the height
-        self.assertAlmostEqual(f4, 209.0, delta=5.0)  # mud at 4 cm: worked by hand
+        self.assertAlmostEqual(f4, 1464.0, delta=5.0)  # mud at 4 cm: worked by hand
         self.assertGreater(soil.sidewall(DEEP, 0.04, length), 0.0)
 
     def test_fresh_soil_stands_at_the_sinkage_both_sides(self):
