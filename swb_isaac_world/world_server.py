@@ -20,7 +20,16 @@ import argparse
 import logging
 import os
 import sys
+import threading
 import time
+
+# A world server that cannot go on exits with this (EX_TEMPFAIL, as swb_carla_world's): its
+# launch respawns it fresh. docs/issues/011: one stopped answering after RTX's "Out of
+# resource descriptors!", another sat in Kit's start for 16 minutes; neither exited.
+EXIT_FRESH = 75
+# Kit's start, the worlds' preload and their first renders, s: a cold Town01 takes about 7
+# minutes; isaac_up.sh waits 30 (ISAAC_READY_TIMEOUT) for an answer.
+STARTUP_LIMIT = 1200.0
 
 
 def world_file(entry):
@@ -56,6 +65,32 @@ def preload_list(worlds):
     if missing:
         raise SystemExit(f"world(s) not found: {', '.join(missing)}")
     return usds
+
+
+def exit_fresh(log, why):
+    """Leave now, for a fresh process (`EXIT_FRESH`): logs flushed, no clean-up, which a
+    wedged renderer would hang in."""
+    log.error("%s: exiting for a fresh world server", why)
+    for h in logging.getLogger().handlers:
+        h.flush()
+    sys.stdout.flush()
+    os._exit(EXIT_FRESH)
+
+
+def startup_watchdog(seconds, on_timeout):
+    """A started timer calling `on_timeout` unless cancelled within `seconds`."""
+    timer = threading.Timer(seconds, on_timeout)
+    timer.daemon = True
+    timer.start()
+    return timer
+
+
+def fatal_consumer(on_fatal):
+    """An omni.log message consumer calling `on_fatal(channel, message)` for a FATAL one."""
+    def consume(channel, level, module, filename, func, line, msg, *rest):
+        if getattr(level, "name", level) == "FATAL":
+            on_fatal(channel, msg)
+    return consume
 
 
 def main(argv=None):
@@ -110,6 +145,8 @@ def main(argv=None):
     else:
         os.environ.pop("DISPLAY", None)
     started = time.monotonic()
+    watchdog = startup_watchdog(STARTUP_LIMIT, lambda: exit_fresh(
+        log, f"not up after {STARTUP_LIMIT:.0f} s (Kit's start and the preload)"))
     from isaacsim import SimulationApp
 
     # Kit uploads a crash's minidump to NVIDIA by default: kept on disk only (its dumpDir).
@@ -123,6 +160,11 @@ def main(argv=None):
         config.update(hide_ui=True, width=854, height=480, window_width=1920,
                       window_height=1080)
     app = SimulationApp(config)
+    import omni.log
+
+    # Kept referenced: the consumer lives as long as its handle.
+    fatal_watch = omni.log.get_log().add_message_consumer(fatal_consumer(  # noqa: F841
+        lambda channel, msg: exit_fresh(log, f"Kit fatal from {channel}: {msg}")))
 
     from .world import IsaacWorld
 
@@ -132,6 +174,7 @@ def main(argv=None):
     # The first listed is preloaded last, so it is the one loaded when the bridge first asks.
     for usd in reversed(preload):
         world.preload(usd)
+    watchdog.cancel()
     log.info("Isaac Sim %s up in %.1f s", world.isaac_version, time.monotonic() - started)
     try:
         run(world, socket, should_stop=lambda: not app.is_running())
