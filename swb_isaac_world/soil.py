@@ -376,16 +376,21 @@ class SoilGrid:
         mean over its contact `length` of the nodes one and two spacings outside its width."""
         if bottom <= 0 or length <= 0:
             return (0.0, 0.0)
-        out = []
-        for side in (1.0, -1.0):
-            total, count = 0.0, 0
+        h, blocks, out = self.h, self.blocks, []
+        step = length / (SIDE_POINTS - 1)
+        for side in (1.0, -1.0):  # plain loops: 20 nodes, faster than numpy's set-up
+            total = 0.0
             for k in (1, 2):
-                off = side * (width / 2 + k * self.h)
-                for a in np.linspace(-length / 2, length / 2, SIDE_POINTS):
-                    px, py = x + a * c - off * s, y + a * s + off * c
-                    total += max(0.0, bottom - self.depth(px, py))
-                    count += 1
-            out.append(total / count)
+                off = side * (width / 2 + k * h)
+                for j in range(SIDE_POINTS):
+                    a = -length / 2 + j * step
+                    ix = int(round((x + a * c - off * s) / h))
+                    iy = int(round((y + a * s + off * c) / h))
+                    b = blocks.get((ix // BLOCK, iy // BLOCK))
+                    d = 0.0 if b is None else float(b.sinkage[ix % BLOCK, iy % BLOCK])
+                    if bottom > d:
+                        total += bottom - d
+            out.append(total / (2 * SIDE_POINTS))
         return tuple(out)
 
     def _patch(self, x, y, c, s, half_len, load, radius, width, spin_speed, speed, dt, ox, oy,

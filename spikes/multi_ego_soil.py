@@ -3,6 +3,8 @@
     ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/multi_ego_soil.py \\
         [<Town01 world.yaml> [<surfaces.yaml>]]
     # MULTI_SENSORS=0: the rig's sensors off; MULTI_CYCLES: the memory cycles (default 8)
+    # MULTI_T2=ab: each frame-time case run with 054's sidewall force off and on, in turn,
+    # MULTI_REPEATS times (default 2), on a shared host the only fair comparison
     # prints one SPIKE-RESULT json
 
 Several aib egos in one world server, on one zone's soil grid, without Autoware: one world
@@ -31,13 +33,15 @@ os.environ.pop("DISPLAY", None)
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from isaacsim import SimulationApp  # noqa: E402
 
-app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]})
+app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]
+                     + os.environ.get("ISAAC_KIT_ARGS", "").split()})
 import copy  # noqa: E402
 import logging  # noqa: E402
 
 import yaml  # noqa: E402
 
-from swb_isaac_world.surface_layer import register  # noqa: E402
+from swb_isaac_world import soil  # noqa: E402
+from swb_isaac_world.surface_layer import SurfaceLayer, register  # noqa: E402
 from swb_isaac_world.world import IsaacWorld  # noqa: E402
 
 logging.basicConfig(level=logging.INFO, stream=sys.stdout,
@@ -197,11 +201,30 @@ def memory():
     return rss, gpu
 
 
+CASES = {"one": [(X0, NORTH)], "column2": [(X0, NORTH), (X0 - GAP, NORTH)],
+         "side2": [(X0, NORTH), (X0, SOUTH)],
+         "four": [(X0, NORTH), (X0, SOUTH), (X0 - GAP, NORTH), (X0 - GAP, SOUTH)]}
+SIDE_HEIGHTS, SIDEWALL = soil.SoilGrid.side_heights, SurfaceLayer._sidewall
+
+
+def t2(on):
+    """054's sidewall force (T2) on, or off as before step 5."""
+    soil.SoilGrid.side_heights = SIDE_HEIGHTS if on else (lambda self, *a: (0.0, 0.0))
+    SurfaceLayer._sidewall = SIDEWALL if on else (lambda self, *a: 0.0)
+
+
 out = {"surfaces": SURFACES, "sensors": SENSORS, "speed": SPEED, "stretch": STRETCH}
-out["one"] = case("one", [(X0, NORTH)])
-out["column2"] = case("column2", [(X0, NORTH), (X0 - GAP, NORTH)])
-out["side2"] = case("side2", [(X0, NORTH), (X0, SOUTH)])
-out["four"] = case("four", [(X0, NORTH), (X0, SOUTH), (X0 - GAP, NORTH), (X0 - GAP, SOUTH)])
+if os.environ.get("MULTI_T2") == "ab":
+    for rep in range(int(os.environ.get("MULTI_REPEATS", "2"))):
+        for name, starts in CASES.items():
+            for on in (False, True):
+                t2(on)
+                out[f"{name}_t2{'on' if on else 'off'}_{rep}"] = case(
+                    f"{name} t2 {'on' if on else 'off'} {rep}", starts)
+    t2(True)
+else:
+    for name, starts in CASES.items():
+        out[name] = case(name, starts)
 out["memory"] = [memory()]
 for i in range(CYCLES):
     surface.fresh_soil()
