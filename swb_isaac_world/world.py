@@ -591,6 +591,24 @@ class IsaacWorld(WorldBase):
                             m, UsdShade.Tokens.strongerThanDescendants)
         self.signal_groups = signal_table.groups(self.signal_table, self.signal_colours)
 
+    def get_signals(self, opendrive_ids):
+        """The colour each lamp shows now (OpenDRIVE id -> OFF, RED, AMBER or GREEN), read
+        from the materials bound on its lenses, not from `signal_colours`: a bulb is lit when
+        it wears its own colour's look. Empty `opendrive_ids`: every matched lamp."""
+        from pxr import UsdShade
+
+        ids = list(opendrive_ids) or sorted(self.lenses)
+        unknown = [od for od in ids if od not in self.lenses]
+        if unknown:
+            raise ValueError(f"no lamp for OpenDRIVE id(s) {', '.join(unknown)}")
+        shown = {}
+        for od in ids:
+            lit = [bulb for bulb, meshes in self.lenses[od].items() if meshes and all(
+                UsdShade.MaterialBindingAPI(m).ComputeBoundMaterial()[0].GetPath()
+                == Sdf.Path(f"{SIGNAL_LOOKS}/{bulb}") for m in meshes)]
+            shown[od] = lit[0] if len(lit) == 1 else "OFF"
+        return shown
+
     def preload(self, usd, renders=PRELOAD_RENDERS):
         """Load `usd` and render it before swb asks for it: the first render of a large world
         compiles its materials (about 9 minutes for CARLA's Town01), which no request timeout
