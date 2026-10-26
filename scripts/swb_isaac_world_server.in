@@ -3,6 +3,7 @@
 #
 #   swb_isaac_world_server --port N --ego <yaml|none> [--ego-domain N] --world <worlds|none>
 #                      --follow <bool> --render <auto|window|headless> [--record=<dir>]
+#                      [--physics-hz <Hz>]
 #                      [--ros-args ...]
 #
 # The world server is Python 3.12 in Isaac's venv with Isaac's own ROS 2 libraries
@@ -18,7 +19,7 @@
 set -e
 swb_isaac_world="${SWB_ISAAC_DIR:-@SWB_ISAAC_DIR@}"
 aib_ego="$swb_isaac_world/deps/autoware_isaac_bridge/src/aib/config/ego.yaml"
-port=5590; ego=default; ego_domain=0; world=none; follow=false; render=auto; record=""
+port=5590; ego=default; ego_domain=0; world=none; follow=false; render=auto; record=""; physics_hz=60
 while [ $# -gt 0 ]; do
     case "$1" in
         --ros-args) break ;;
@@ -29,6 +30,7 @@ while [ $# -gt 0 ]; do
         --follow) follow="$2"; shift 2 ;;
         --render) render="$2"; shift 2 ;;
         --record=*) record="${1#--record=}"; shift ;;
+        --physics-hz) physics_hz="$2"; shift 2 ;;
         *) echo "swb_isaac_world_server: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -43,6 +45,7 @@ case "$ego_domain" in 0|"") ;; *) args+=(--ego-domain "$ego_domain") ;; esac
 case "$world" in none|"") ;; *) args+=(--world "$world") ;; esac
 case "$follow" in true|1) args+=(--follow) ;; esac
 [ -n "$record" ] && args+=(--record "$record")
+args+=(--physics-hz "$physics_hz")
 display="${DISPLAY:-}"
 case "$render" in
     auto) [ -n "${ISAAC_HEADLESS:-}" ] && [ "${ISAAC_HEADLESS}" != 0 ] && display="" ;;

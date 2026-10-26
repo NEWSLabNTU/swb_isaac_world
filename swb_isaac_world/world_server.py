@@ -117,7 +117,14 @@ def main(argv=None):
                     help="a directory: each scenario's first ego's dash and wheel pictures "
                          "and soil state, every rendered frame (`recorder`), for a video; "
                          "empty: none")
+    ap.add_argument("--physics-hz", type=float, default=60.0,
+                    help="the physics rate, Hz: PhysX, the egos' onboard computers and the soil "
+                         "step at it, and the bridge splits SSv2's step into steps no longer "
+                         "than 1 / this (Hello's max_physics_dt). The ego's commands are taken "
+                         "once per SSv2 step: a faster controller needs a shorter SSv2 step")
     args = ap.parse_args(argv)
+    if not args.physics_hz > 0:
+        raise SystemExit(f"--physics-hz {args.physics_hz}: a rate > 0")
     from swb_world_server import lifetime
     from swb_world_server.server import bind, run
 
@@ -168,14 +175,16 @@ def main(argv=None):
 
     from .world import IsaacWorld
 
-    world = IsaacWorld(ego_config=args.ego or None, ego_domain=args.ego_domain or None,
+    world = IsaacWorld(physics_dt=1 / args.physics_hz,
+                       ego_config=args.ego or None, ego_domain=args.ego_domain or None,
                        follow=bool(args.display and args.follow), surface_maps=surface_maps,
                        record=args.record or None)
     # The first listed is preloaded last, so it is the one loaded when the bridge first asks.
     for usd in reversed(preload):
         world.preload(usd)
     watchdog.cancel()
-    log.info("Isaac Sim %s up in %.1f s", world.isaac_version, time.monotonic() - started)
+    log.info("Isaac Sim %s up in %.1f s, physics at %g Hz", world.isaac_version,
+             time.monotonic() - started, 1 / world.max_physics_dt)
     try:
         run(world, socket, should_stop=lambda: not app.is_running())
     finally:

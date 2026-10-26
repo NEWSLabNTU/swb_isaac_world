@@ -107,7 +107,8 @@ class IsaacWorld(WorldBase):
 
     simulator_name = "isaac"
     capabilities = ("SIGNALS", "TRACKED_MOTION", "CONTACTS", "ROAD_CONDITION", "ENVIRONMENT")
-    # The bridge splits SSv2's step into PhysX steps of at most Isaac's default 60 Hz.
+    # The bridge splits SSv2's step into PhysX steps of at most this (the world server's
+    # --physics-hz; Isaac's default 60 Hz).
     max_physics_dt = 1 / 60
 
     @property
@@ -153,6 +154,7 @@ class IsaacWorld(WorldBase):
         self.world = World(stage_units_in_meters=1.0, physics_dt=physics_dt,
                            rendering_dt=physics_dt)
         self.dt = physics_dt
+        self.max_physics_dt = physics_dt  # what Hello tells the bridge
         self.stage = omni.usd.get_context().get_stage()
         # CARLA's vehicles exported to USD (SWB_VEHICLE_USD): an entity whose Spawn names one
         # wears it; any other stays the box.
