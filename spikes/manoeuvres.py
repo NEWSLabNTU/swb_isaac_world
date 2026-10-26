@@ -34,6 +34,12 @@ up on dry asphalt from x -80, heading +x, and runs the manoeuvre from x 100, ins
 - sweep_long: the tire's curve lengthways: from 40 km/h (30 on mud), ABS off, the
   deceleration asked ramped from 0 to 15 m/s^2 (past what any ground gives) over 1 s,
   steering straight: the wheels lock.
+- drift (dry only; roadmap 057): from 100 km/h, autoware-drift's drift sequence
+  (`drift_controller.law`, from DRIFT_LAW: its package directory) takes the car at x 100 into a
+  left drift on a DRIFT_RADIUS (100) m bend: trail-brake, power-over, the held sideslip, the
+  exit; the law's command goes in as the vehicle interface's (tire angle, acceleration), and
+  between phases the car holds 100 km/h with its front tire along its travel. EGO_RIG names
+  another rig in aib's config (`drift_mustang.rig.yaml`).
 - rut_cross (mud only; 054's acceptance): a first pass at 20 km/h straight along the lane
   lays ruts; then the car crosses them at 6 deg on a straight line, from 5 m right of the lane
   at x 100, the pure-pursuit driver on the line at 20 km/h; then the same crossing on fresh
@@ -77,6 +83,9 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
 GROUND_USD = os.path.join(os.path.dirname(OUT), "proving_ground.usda")
 SURFACES = os.path.join(HERE, os.environ.get("PROVING_GROUND", "proving_ground.yaml"))
 EGO_YAML = os.path.join(REPO, "src/autoware_isaac_bridge/src/aib/config/ego.yaml")
+DRIFT_LAW = os.environ.get("DRIFT_LAW", os.path.join(
+    REPO, "../autoware-drift/src/control/drift_controller"))
+DRIFT_RADIUS = float(os.environ.get("DRIFT_RADIUS", "100"))
 SUBSTEPS, DT = 3, 1 / 60
 FRAME = SUBSTEPS * DT
 G = 9.81
@@ -85,7 +94,7 @@ GRID = 10.0
 LANES = {"dry": 15.0, "wet": 135.0, "mud": 255.0, "split": 375.0}
 X_SPAWN, X_TRIGGER = -80.0, 100.0
 MANOEUVRES = ("brake", "step", "brake_turn", "sine", "dlc", "circle", "sweep_lat", "sweep_long",
-              "rut_cross")
+              "rut_cross", "drift")
 CROSS_ANGLE, CROSS_OFFSET, CROSS_SPEED = math.radians(6.0), 5.0, 20 / 3.6
 STEER_RATE, STEER_MAX = math.radians(5.0), math.radians(35.0)
 BRAKE_RAMP, BRAKE_MAX = 1.0, 15.0
@@ -125,6 +134,13 @@ def make_ground(path):
 
 
 os.makedirs(OUT, exist_ok=True)
+if os.environ.get("EGO_RIG"):  # another car: ego.yaml with its rig
+    import yaml  # noqa: E402
+    cfg = yaml.safe_load(open(EGO_YAML))
+    cfg["rig"] = os.path.join(os.path.dirname(EGO_YAML), os.environ["EGO_RIG"])
+    EGO_YAML = os.path.join(OUT, "ego.yaml")
+    with open(EGO_YAML, "w") as f:
+        yaml.safe_dump(cfg, f)
 if not os.path.exists(GROUND_USD):
     make_ground(GROUND_USD)
 usd = os.path.realpath(GROUND_USD)
@@ -247,7 +263,7 @@ def speeds(pad, kind):
     mud = pad in ("mud", "split")
     return {"brake": 40, "step": 40, "brake_turn": 40, "sine": 50 if mud else 80,
             "dlc": 40 if mud else 80, "circle": 5 * 3.6, "sweep_lat": 10 * 3.6,
-            "sweep_long": 30 if mud else 40}[kind] / 3.6
+            "sweep_long": 30 if mud else 40, "drift": 100}[kind] / 3.6
 
 
 def tires(v, ws, cp):
@@ -303,6 +319,7 @@ def run(pad, kind):
     yaw_prev = yaw_of(ego.state.quat)
     yaw_u = yaw_prev
     trigger = X_CIRCLE if kind == "circle" else X_TRIGGER
+    drift = None
     while t < 200.0:
         s = ego.state
         v, x, y = s.velocity[0], s.position[0], s.position[1]
@@ -353,6 +370,24 @@ def run(pad, kind):
                 cmd.acceleration = -BRAKE_MAX * min(1.0, tm / BRAKE_RAMP)
                 cmd.velocity, cmd.tire_angle = 0.0, 0.0
                 done = abs(v) < 1.0
+            elif kind == "drift":
+                if drift is None:
+                    sys.path.insert(0, DRIFT_LAW)
+                    from drift_controller import law
+                    a = P.com[0] if hasattr(P, "com") else L / 2
+                    drift = law.DriftController([law.DriftPoint(x, y, DRIFT_RADIUS, "pad")],
+                                                law.Params(a=L - a, b=a))
+                vy, r = s.velocity[1], s.angular_velocity[2]
+                c = drift.step(law.State(x, y, yaw_u, v, vy, r), FRAME)
+                phase = f"drift_{drift.phase.value}"
+                if c.override:
+                    cmd.tire_angle, cmd.acceleration = c.steer, c.accel
+                    cmd.velocity = v + 10.0 if c.accel > 0 else 0.0
+                else:
+                    hold(cmd, v, v_go)
+                    cmd.tire_angle = math.atan2(vy, max(v, 1.0)) + L * r / max(v, 1.0)
+                done = (drift.next_index and drift.phase is law.Phase.CRUISE
+                        and drift.t_phase > 3.0) or tm > 40.0
             else:  # circle
                 hold(cmd, v, 5.0 + 0.15 * tm)
                 cx, cy = X_CIRCLE, y0 + RADIUS
@@ -361,7 +396,8 @@ def run(pad, kind):
                                         cy + RADIUS * math.sin(th))
                 err = math.hypot(x - cx, y - cy) - RADIUS
                 done = abs(err) > 4.0 or v > 25.0 or tm > 150.0
-            if done or abs(y - y0) > 100.0 or x > EXTENT[1] - 20:
+            # a drift circles inside the pad (y0 + 2 R): only the ground's edge ends it
+            if done or abs(y - y0) > (400.0 if kind == "drift" else 100.0) or x > EXTENT[1] - 20:
                 break
         world.step({}, SUBSTEPS, DT, False, sim_time=t)
         t += FRAME
@@ -369,10 +405,15 @@ def run(pad, kind):
     world.despawn(handle[0])
     for _ in range(5):
         world.step({}, SUBSTEPS, DT, False)
+    if drift is not None:
+        rows.append({"t": round(t, 3), "phase": "drift_log", "log": drift.log})
     with open(os.path.join(OUT, f"{name}.jsonl"), "w") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
-    out = summarise(pad, kind, [r for r in rows if r["phase"] != "runup"], v_go, amp, y0)
+    out = summarise(pad, kind, [r for r in rows if r["phase"] not in ("runup", "drift_log")],
+                    v_go, amp, y0)
+    if drift is not None:
+        out["drift_phases"] = drift.log
     print(name, json.dumps(out), flush=True)
     return out
 
@@ -494,6 +535,19 @@ def summarise(pad, kind, m, v_go, amp, y0):
                    ratio_1_00=round(at(SINE_END + 1.0)["r"] / r_peak, 3) if r_peak else None,
                    ratio_1_75=round(at(SINE_END + 1.75)["r"] / r_peak, 3) if r_peak else None,
                    lateral_at_1_07_m=round(lat, 2))
+    if kind == "drift":
+        held = [r for r in m if r["phase"] == "drift_hold"]
+        settled = held[len(held) // 3:]
+        if settled:
+            n = len(settled)
+            r_mean = sum(r["r"] for r in settled) / n
+            v_mean = sum(math.hypot(r["vx"], r["vy"]) for r in settled) / n
+            out.update(hold_s=round(held[-1]["t"] - held[0]["t"], 2),
+                       sideslip_held=round(sum(r["beta"] for r in settled) / n, 2),
+                       speed_held_kmh=round(3.6 * v_mean, 1),
+                       radius_held_m=round(v_mean / math.radians(r_mean), 1) if r_mean else None,
+                       rear_slip_held=[round(sum(r["slip"][i] for r in settled) / n, 3)
+                                       for i in (2, 3)] if settled[0]["slip"] else None)
     if kind == "dlc":
         x0 = go["x"]
         errs = [abs(r["y"] - (y0 + dlc_offset(r["x"] - x0))) for r in m]
@@ -546,7 +600,8 @@ result = {"out": OUT, "rig": RIG, "ecu": ECU, "estimator": "truth" if TRUTH else
           "cases": []}
 for pad in pads:
     for kind in kinds:
-        if pad == "split" and kind != "brake" or kind == "rut_cross" and pad != "mud":
+        if (pad == "split" and kind != "brake" or kind == "rut_cross" and pad != "mud"
+                or kind == "drift" and pad != "dry"):
             continue
         try:
             result["cases"].append(rut_cross(pad) if kind == "rut_cross" else run(pad, kind))
