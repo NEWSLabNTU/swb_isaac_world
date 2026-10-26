@@ -220,6 +220,7 @@ class SurfaceLayer:
         x, y = contact.position[0] + ox, contact.position[1] + oy
         dx, dy, dz = contact.direction
         spin = wheel.rotation_speed * r
+        slip = soil.tire_slip(spin, speed, vehicle.p.min_active_slip_denominator)
         if s.soil == "grid":
             grid = self.grids.get(zone.id)
             if grid is None:
@@ -227,9 +228,9 @@ class SurfaceLayer:
                 grid.begin_step()
                 log.info("soil zone %s (%s): grid at %g m", zone.id, s.cls, SOIL_SPACING)
             out = grid.wheel((vehicle.path, i), x, y, math.atan2(dy, dx), contact.load, r, b,
-                             spin, speed, dt)
+                             spin, speed, dt, slip)
         else:
-            out = soil.wong_reece(params, contact.load, r, b, spin, speed)
+            out = soil.wong_reece(params, contact.load, r, b, spin, speed, slip=slip)
         self.driven = True
         self.saved = False
         share = soil.edge_weight(zone.polygon, x, y, SOIL_BLEND * 2 * r)
@@ -304,7 +305,7 @@ class SurfaceLayer:
                     grid.begin_step()
                     log.info("soil zone %s (%s): grid at %g m", zone.id, sf.cls, SOIL_SPACING)
                 sink[i] = grid.wheel(key, wx, wy, yaw if speed >= 0 else yaw + math.pi, load,
-                                     radius, width, abs(speed), abs(speed), dt).sinkage
+                                     radius, width, abs(speed), abs(speed), dt, 0.0).sinkage
                 self.soil_xy[key] = (wx, wy)
                 self.driven = True
                 self.saved = False

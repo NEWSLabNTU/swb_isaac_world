@@ -38,7 +38,9 @@ Outputs, for the surface layer to hand PhysX (the spike's three channels):
 
 Slip sinkage (a spinning or locked wheel digs in) is not in Bekker's equation. Both models
 take Lyasko's factor (2010): the static sinkage times (1 + |i|) / (1 - 0.5 |i|), through
-k / factor^n. Engineered, as everything here, until S5 calibrates it.
+k / factor^n, with `i` the slip the caller gives: in the simulation `tire_slip`, the real slip
+with its denominator held at the tire's minimum (docs/issues/010); in a calibration, the real
+slip it imposes.
 """
 import math
 from dataclasses import dataclass
@@ -165,9 +167,18 @@ def contact_length(radius, sinkage):
 
 
 def slip_ratio(spin_speed, speed):
-    """PhysX-style longitudinal slip (r omega - v) / max(|r omega|, |v|), in [-1, 1]; 0 at rest."""
+    """The real longitudinal slip (r omega - v) / max(|r omega|, |v|), in [-1, 1]; 0 at rest
+    (not PhysX's, which divides by |v| plus its minimum denominator)."""
     m = max(abs(spin_speed), abs(speed))
     return 0.0 if m < 1e-3 else (spin_speed - speed) / m
+
+
+def tire_slip(spin_speed, speed, floor):
+    """The slip a simulated tire digs in at: the real slip with its denominator held at least
+    `floor` (m/s, PhysX's minimum slip denominator), (r omega - v) / max(|r omega|, |v|,
+    floor). At a creep PhysX's tire needs about `floor` times its slip of overspeed for any
+    force; the real slip would read that as spinning in place (docs/issues/010)."""
+    return (spin_speed - speed) / max(abs(spin_speed), abs(speed), floor, 1e-3)
 
 
 # --- C: the closed-form wheel ----------------------------------------------------------------
@@ -199,14 +210,15 @@ def _wr_forces(p, k, r, b, theta1, slip_vel, speed, n_pts=THETA_POINTS):
     return fz, fx, res, lim
 
 
-def wong_reece(p: SoilParams, load, radius, width, spin_speed=0.0, speed=0.0):
+def wong_reece(p: SoilParams, load, radius, width, spin_speed=0.0, speed=0.0, *, slip):
     """A rigid wheel of `radius` and `width` (m) under `load` (N) on fresh flat soil, its rim at
-    `spin_speed` (r omega) and its axle at `speed` (m/s, forward positive)."""
+    `spin_speed` (r omega) and its axle at `speed` (m/s, forward positive), digging in at
+    longitudinal `slip` (the tire's, the module docstring)."""
     if load <= 0:
         return WheelSoil(0.0, 0.0, 0.0, 0.0, 0.0)
     sign = -1.0 if speed < 0 or (speed == 0 and spin_speed < 0) else 1.0
     v, u = sign * speed, sign * spin_speed
-    k = p.k(width) / slip_factor(slip_ratio(u, v), p.slip_sinkage) ** p.n
+    k = p.k(width) / slip_factor(slip, p.slip_sinkage) ** p.n
     lo, hi = 0.0, math.acos(1.0 - min(MAX_SINKAGE, radius) / radius)
     if _wr_forces(p, k, radius, width, hi, u - v, v)[0] < load:
         lo = hi
@@ -307,11 +319,12 @@ class SoilGrid:
                     blocks.append((b, sl))
         return (bx0 * BLOCK, by0 * BLOCK), sink, shear, touched, blocks
 
-    def wheel(self, key, x, y, heading, load, radius, width, spin_speed, speed, dt,
+    def wheel(self, key, x, y, heading, load, radius, width, spin_speed, speed, dt, slip,
               commit=True):
         """Wheel `key` (any hashable, the same every step) at contact point (x, y), heading
         (rad, from +x toward +y), carrying `load` (N), its rim at `spin_speed` and axle at
-        `speed` (m/s, forward positive) for `dt` s. Updates the nodes under it (unless `commit`
+        `speed` (m/s, forward positive) for `dt` s, digging in at longitudinal `slip` (the
+        tire's, the module docstring). Updates the nodes under it (unless `commit`
         is false) and returns its WheelSoil, averaged over the sweep from its last position."""
         last = self.last.get(key)
         if commit:
@@ -338,9 +351,8 @@ class SoilGrid:
         sub_dt = dt / len(path)
         res = thrust = limit = carried = 0.0
         zb = 0.0
+        k = self.p.k(width) / slip_factor(slip, self.p.slip_sinkage) ** self.p.n
         if self.warp is not None:
-            k = self.p.k(width) / slip_factor(slip_ratio(spin_speed, speed),
-                                                  self.p.slip_sinkage) ** self.p.n
             zb, res, thrust, limit, carried = (float(v) for v in self.warp.sweep(
                 sink, shear, touched, path, ox, oy, h, c, s, half_len, width, radius, load, k,
                 self.p, (spin_speed - speed) * sub_dt, self.step_id,
@@ -349,7 +361,7 @@ class SoilGrid:
             for px, py in path:
                 zb, r_, t_, l_, f_ = self._patch(px, py, c, s, half_len, load, radius, width,
                                                  spin_speed, speed, sub_dt, ox, oy, sink,
-                                                 shear, touched)
+                                                 shear, touched, k)
                 res, thrust, limit, carried = res + r_, thrust + t_, limit + l_, carried + f_
         if commit:
             for b, sl in blocks:
@@ -377,8 +389,9 @@ class SoilGrid:
         return tuple(out)
 
     def _patch(self, x, y, c, s, half_len, load, radius, width, spin_speed, speed, dt, ox, oy,
-               sink, shear, touched):
-        """One sweep position: settle the wheel, update the window's nodes in place;
+               sink, shear, touched, k):
+        """One sweep position, the soil's sinkage modulus `k` at the wheel's slip: settle the
+        wheel, update the window's nodes in place;
         (sinkage, resistance, thrust, traction limit, load carried)."""
         p, h = self.p, self.h
         ex = abs(c) * half_len + abs(s) * width / 2
@@ -397,7 +410,6 @@ class SoilGrid:
         # the rim's height above the wheel bottom at each node
         rim = radius - np.sqrt(np.maximum(radius * radius - dx * dx, 0.0))
         area = h * h
-        k = p.k(width) / slip_factor(slip_ratio(spin_speed, speed), p.slip_sinkage) ** p.n
 
         def carried(zb):  # load carried for each candidate bottom (rows), N
             d = np.maximum(zb[:, None] - rim - sp, 0.0)

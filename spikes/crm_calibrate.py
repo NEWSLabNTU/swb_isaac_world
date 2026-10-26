@@ -182,7 +182,7 @@ def grid_run(params, slip, dt=1 / 60, length=6.0):
     out, x = [], 0.0
     while x < length:
         g.begin_step()
-        out.append(g.wheel(0, x, 0.013, 0.0, LOAD, R, B, SPEED / (1 - slip), SPEED, dt))
+        out.append(g.wheel(0, x, 0.013, 0.0, LOAD, R, B, SPEED / (1 - slip), SPEED, dt, slip))
         x += SPEED * dt
     half = out[len(out) // 2:]
     mean = {f: sum(getattr(o, f) for o in half) / len(half)

@@ -92,7 +92,7 @@ x = 2.0
 while x < 14.0:
     grid.begin_step()
     for k, y in enumerate(TRACKS):
-        grid.wheel(k, x, y, 0.0, 4500.0, 0.37, 0.235, 8.0 / 0.8, 8.0, dt)
+        grid.wheel(k, x, y, 0.0, 4500.0, 0.37, 0.235, 8.0 / 0.8, 8.0, dt, 0.2)
     x += 8.0 * dt
 rebuild = []
 queued = len({(bx // 2, by // 2) for bx, by in grid.dirty_blocks()})

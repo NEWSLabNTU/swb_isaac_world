@@ -10,7 +10,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from swb_isaac_world import soil, surfaces  # noqa: E402
-from swb_isaac_world.soil import SoilError, SoilGrid, wong_reece  # noqa: E402
+from swb_isaac_world.soil import SoilError, SoilGrid, tire_slip, wong_reece  # noqa: E402
 
 TABLE = surfaces.load_classes()
 SAND = TABLE["sand"].soil
@@ -24,7 +24,7 @@ def drive(grid, load=4500.0, slip=0.2, speed=5.0, dt=1 / 60, length=6.0, y=0.013
     out, x = [], 0.0
     while x < length:
         grid.begin_step()
-        out.append(grid.wheel(key, x, y, 0.0, load, R, B, speed / (1 - slip), speed, dt))
+        out.append(grid.wheel(key, x, y, 0.0, load, R, B, speed / (1 - slip), speed, dt, slip))
         x += speed * dt
     half = out[len(out) // 2:]
     return {f: sum(getattr(o, f) for o in half) / len(half)
@@ -32,7 +32,7 @@ def drive(grid, load=4500.0, slip=0.2, speed=5.0, dt=1 / 60, length=6.0, y=0.013
 
 
 def wr(p, load=4500.0, slip=0.2, speed=5.0):
-    return wong_reece(p, load, R, B, speed / (1 - slip), speed)
+    return wong_reece(p, load, R, B, speed / (1 - slip), speed, slip=slip)
 
 
 class ParamsTest(unittest.TestCase):
@@ -97,7 +97,7 @@ class ClosedFormTest(unittest.TestCase):
             self.assertGreater(mu, 0.3)
 
     def test_a_locked_wheel_pulls_back_and_reversing_mirrors(self):
-        locked = wong_reece(SAND, 4500.0, R, B, 0.0, 5.0)
+        locked = wong_reece(SAND, 4500.0, R, B, 0.0, 5.0, slip=-1.0)
         self.assertLess(locked.thrust, -0.9 * locked.traction_limit)
         fwd, back = wr(SAND, speed=3.0), wr(SAND, speed=-3.0)
         self.assertAlmostEqual(fwd.sinkage, back.sinkage)
@@ -131,6 +131,26 @@ class GridTest(unittest.TestCase):
         # 047 S5: Chrono's SCM (treaded wheel) and CRM sink 1.26-1.41 times deeper at 50 %
         # slip than at none; Lyasko's factor as published gave 1.7
         self.assertTrue(1.2 < z[2] / z[0] < 1.45, z[2] / z[0])
+
+    def test_a_creeping_wheel_digs_no_deeper_than_a_fast_one_at_the_same_tire_slip(self):
+        # docs/issues/010: PhysX's tire pulls at slip 0.17 = (r omega - v) / (v + 4), 0.7 m/s
+        # of overspeed at a creep, which as real slip (0.87) dug the wheel in
+        z = {}
+        for v in (0.1, 7.5):
+            g, x, out, spin = SoilGrid(MUD), 0.0, [], v + 0.17 * (v + 4.0)
+            while x < 4.0:
+                g.begin_step()
+                out.append(g.wheel(0, x, 0.013, 0.0, 4300.0, R, B, spin, v, 1 / 60,
+                                   tire_slip(spin, v, 4.0)).sinkage)
+                x += v / 60
+            z[v] = sum(out[len(out) // 2:]) / (len(out) - len(out) // 2)
+        self.assertLess(z[0.1], 1.02 * z[7.5], z)
+
+    def test_the_tire_slip_is_the_real_slip_above_the_floor(self):
+        self.assertAlmostEqual(tire_slip(10.0, 8.0, 4.0), 0.2)
+        self.assertAlmostEqual(tire_slip(6.0, 8.0, 4.0), -0.25)
+        self.assertAlmostEqual(tire_slip(0.8, 0.1, 4.0), 0.175)
+        self.assertAlmostEqual(tire_slip(4.0, 0.0, 4.0), 1.0)  # spinning in place
 
     def test_the_rut_stays_and_a_second_pass_sinks_less_and_rolls_easier(self):
         for p in (SAND, LOAM):
@@ -208,9 +228,9 @@ class GridTest(unittest.TestCase):
     def test_a_teleport_is_not_swept(self):
         g = SoilGrid(SAND)
         g.begin_step()
-        g.wheel(0, 0.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60)
+        g.wheel(0, 0.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60, 0.0)
         g.begin_step()
-        g.wheel(0, 20.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60)
+        g.wheel(0, 20.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60, 0.0)
         self.assertEqual(g.depth(10.0, 0.0), 0.0)
 
     def test_saved_ruts_load_into_a_fresh_grid(self):
@@ -224,14 +244,14 @@ class GridTest(unittest.TestCase):
     def test_a_dry_run_changes_nothing(self):
         g = SoilGrid(SAND)
         g.begin_step()
-        out = g.wheel(0, 0.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60, commit=False)
+        out = g.wheel(0, 0.0, 0.0, 0.0, 4500.0, R, B, 5.0, 5.0, 1 / 60, 0.0, commit=False)
         self.assertGreater(out.sinkage, 0.0)
         self.assertEqual(g.blocks, {})
 
     def test_too_heavy_bottoms_out(self):
         g = SoilGrid(SAND)
         g.begin_step()
-        out = g.wheel(0, 0.0, 0.0, 0.0, 2e6, R, B, 0.0, 0.0, 1 / 60)
+        out = g.wheel(0, 0.0, 0.0, 0.0, 2e6, R, B, 0.0, 0.0, 1 / 60, 0.0)
         self.assertAlmostEqual(out.sinkage, soil.MAX_SINKAGE, places=6)
         self.assertLess(out.load, 2e6)
 
@@ -270,7 +290,7 @@ class WarpTest(unittest.TestCase):
         x = 2.0
         while x < 20.0:
             g.begin_step()
-            g.wheel(0, x, 0.013, 0.0, 4500.0, R, B, 27.7, 25.0, 1 / 60)
+            g.wheel(0, x, 0.013, 0.0, 4500.0, R, B, 27.7, 25.0, 1 / 60, 1 - 25.0 / 27.7)
             x += 25.0 / 60
             n += 1
         self.assertLess((time.perf_counter() - t0) / n, 400e-6)  # 141 us measured, loaded host
@@ -304,7 +324,7 @@ class SidewallTest(unittest.TestCase):
         out = None
         for n in range(30):
             g.begin_step()
-            out = g.wheel(0, n * 5.0 / 60, 0.013, 0.0, 4500.0, R, B, 5.0 / 0.8, 5.0, 1 / 60)
+            out = g.wheel(0, n * 5.0 / 60, 0.013, 0.0, 4500.0, R, B, 5.0 / 0.8, 5.0, 1 / 60, 0.2)
         self.assertGreater(out.sinkage, 0.01)
         for h in out.side:
             self.assertAlmostEqual(h, out.sinkage, delta=1e-6)
@@ -316,7 +336,7 @@ class SidewallTest(unittest.TestCase):
         for n in range(30):  # a second wheel beside it, its right side over the old rut's
             g.begin_step()
             out = g.wheel(2, n * 5.0 / 60, 0.013 - 0.3 + B, 0.0, 4500.0, R, B, 5.0 / 0.8,
-                          5.0, 1 / 60)
+                          5.0, 1 / 60, 0.2)
         left, right = out.side
         self.assertAlmostEqual(left, out.sinkage, delta=1e-6)
         self.assertLess(right, left)

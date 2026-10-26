@@ -243,7 +243,7 @@ class RutsTest(unittest.TestCase):
         from swb_isaac_world import soil
         g = soil.SoilGrid(TABLE["sand"].soil)
         g.begin_step()
-        g.wheel(0, 1.0, 0.0, 0.0, 4500.0, 0.37, 0.235, 5.0, 5.0, 1 / 60)
+        g.wheel(0, 1.0, 0.0, 0.0, 4500.0, 0.37, 0.235, 5.0, 5.0, 1 / 60, 0.0)
         soil.save_ruts(ruts / "other.npz", {"elsewhere": g})
         with self.assertRaises(SurfaceError) as e:
             layer.set_condition(1.0, "dry", {"swb.ruts": "other"})
@@ -489,7 +489,8 @@ class FakeVehicle:
     def __init__(self, contacts):
         self.p = SimpleNamespace(tire_friction=1.0, friction_vs_slip=VEHICLE_GRAPH,
                                  wheel_radius=0.37, wheel_width=0.235,
-                                 min_lateral_slip_denominator=1.0, **vars(RIG))
+                                 min_lateral_slip_denominator=1.0,
+                                 min_active_slip_denominator=4.0, **vars(RIG))
         self.contacts = contacts
         self.wheel_states = [SimpleNamespace(slip=0.0, slip_angle=0.0, rotation_speed=0.0)] * 4
         self.written = {}
