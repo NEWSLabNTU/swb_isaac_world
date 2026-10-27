@@ -687,6 +687,8 @@ class IsaacWorld(WorldBase):
 
                 self.recorder = Recorder(self.record, self.stage, ego, self.ego_rig, name,
                                          self.surface)
+                # Its cameras' first renders are as slow as the sensors': in the Spawn too
+                frames += self.recorder.warm_up(warm_step)
             log.info("spawned ego %r as PhysX vehicle %s (box %s at %s); sensors warm after %d "
                      "render(s), %.1f s", name, path, dims, center, frames, time.perf_counter() - t)
             return ego_body(self.ego_rig)

@@ -165,6 +165,23 @@ class Recorder:
         log.info("recorder: trackside camera at (%.1f, %.1f, %.1f) on zone %s", *eye, zone.id)
         return cam
 
+    def warm_up(self, step, frames=60):
+        """Step (physics and a render) until every camera delivers a picture: a render
+        product's first renders set up its RTX pipeline, 0.5 s on an idle host and 20-34 s on a
+        loaded one, which belong in the ego's Spawn rather than in the first Step (the bridge
+        gives a Step 10 s; docs/issues/016 in scenario-world-bridge). The frames' pictures
+        are not recorded."""
+        for i in range(frames):
+            step()
+            if all(self._ready(ann.get_data()) for _, _, ann in self.views):
+                return i + 1
+        log.warning("recorder: cameras not ready after %d warm-up frames", frames)
+        return frames
+
+    @staticmethod
+    def _ready(d):
+        return d is not None and hasattr(d, "shape") and d.size > 0
+
     def capture(self, sim_time, surface, ego_ros):
         """After a rendered frame: both pictures and the state line."""
         import numpy as np
@@ -172,7 +189,7 @@ class Recorder:
         images = []
         for kind, _, ann in self.views:
             d = ann.get_data()
-            if d is None or not hasattr(d, "shape") or d.size == 0:
+            if not self._ready(d):
                 return
             images.append((kind, np.ascontiguousarray(np.asarray(d)[..., :3], dtype=np.uint8)))
         n = self.frame
