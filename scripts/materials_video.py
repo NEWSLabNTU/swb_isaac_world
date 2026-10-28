@@ -6,7 +6,7 @@ inset and a HUD, and a closing chart of every material's numbers.
     scripts/materials_video.py <materials_demo out dir> [out.mp4] [--fast 2] [--size 1920x1080]
 
 Each test is cut from its recording (`tests.jsonl`: `record`, `t_from`, `t_to`) with LEAD s
-before it. Quiet stretches -- the car steady, nothing sliding -- play at `--fast` x. The HUD
+before it. Quiet stretches -- the car steady, nothing sliding -- play at `--fast` x (3). The HUD
 shows speed, longitudinal acceleration, sideslip (from the car's track against its heading,
 the ground truth), the tire panel (each tire coloured from grip to slide, the velocity against
 the nose) and, on soil pads, the deepest wheel's sinkage. Frames are the recorder's (20 a
@@ -23,10 +23,13 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 FPS = 20
-LEAD = 1.0          # s of each test shown before its window
-TAIL = 0.6          # s after it
-TITLE_S = 1.6       # s of a pad's title card
+LEAD = 0.6          # s of each test shown before its window
+TAIL = 0.4          # s after it
+TITLE_S = 1.2       # s of a pad's title card
 CHART_S = 7.0       # s of the closing chart
+# s of a test at real speed; after it the rest plays at --fast x (the start's speed has
+# levelled off or the car is stuck, the turn has shown its slide or spin)
+FULL_S = {"start": 3.0, "turn": 3.5}
 DASH_CROP = 0.35    # the dash camera's top fraction cut off (sky)
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
@@ -167,7 +170,8 @@ def test_frames(wr, t, fast, k, n):
         dash = os.path.join(rec, "dash", f"{r['frame']:06d}.jpg")
         if not (os.path.exists(course) and os.path.exists(dash)):
             continue
-        sped = fast > 1 and r["t"] > t["t_from"] + 0.5 and quiet(r, b)
+        sped = fast > 1 and r["t"] > t["t_from"] + 0.5 and (
+            quiet(r, b) or r["t"] > t["t_from"] + FULL_S.get(t["test"], 1e9))
         if sped:
             skip += 1
             if skip % fast:
@@ -248,10 +252,12 @@ def chart(wr, tests):
             col = (90, 170, 230)
             note = ""
             if test == "brake" and not t.get("stopped", True):
-                col, note = BAD, " not stopped"
+                col, note = BAD, "+"
             d.rectangle((x0, y + int(4 * s), x0 + max(2, bw), y + row_h - int(10 * s)), fill=col)
             d.text((x0 + bw + int(8 * s), y + int(2 * s)), fmt.format(v) + note, fill=FG,
                    font=font(int(22 * s)))
+    d.text((W / 2, H - int(30 * s)), "red: still moving when the test ended (7 s)", fill=BAD,
+           font=font(int(22 * s)), anchor="mm")
     for i, (_, title) in enumerate(pads):
         d.text((int(40 * s), top + i * row_h + int(2 * s)), title, fill=FG,
                font=font(int(24 * s), True))
@@ -263,7 +269,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("run", help="a materials_demo.py out dir (tests.jsonl, record/)")
     ap.add_argument("out", nargs="?")
-    ap.add_argument("--fast", type=int, default=2, help="speed-up of quiet stretches")
+    ap.add_argument("--fast", type=int, default=3, help="speed-up of quiet stretches")
     ap.add_argument("--size", default="1920x1080")
     a = ap.parse_args()
     W, H = (int(v) for v in a.size.split("x"))
