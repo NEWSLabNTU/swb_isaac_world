@@ -1,5 +1,5 @@
 """`python3 -m swb_isaac_world.course <course.yaml> <map dir> [steps...]` (steps: fetch,
-centreline, geometry, maps; all by default; the USD world is `swb_isaac_world.course.usd`). See the package's docstring and roadmap 058."""
+centreline, geometry, maps, scenario; all by default; the USD world is `swb_isaac_world.course.usd`). See the package's docstring and roadmap 058."""
 import argparse
 import json
 import os
@@ -12,8 +12,9 @@ from . import centreline as cl
 from . import data
 from . import geometry
 from . import maps
+from . import scenario
 
-STEPS = ("fetch", "centreline", "geometry", "maps")
+STEPS = ("fetch", "centreline", "geometry", "maps", "scenario")
 
 
 def section_box(course, frame, pts=None):
@@ -152,6 +153,8 @@ def main(argv=None):
         mp = maps.build(c, course, frame, a.map_dir, course.get("speed_limit_kmh", 60.0))
         json.dump(mp, open(os.path.join(work, "maps.json"), "w"), indent=1)
         print("maps:", json.dumps({k: (v if not isinstance(v, list) else len(v)) for k, v in mp.items()}))
+    if "scenario" in a.steps:
+        print("scenario:", json.dumps(scenario.build(c, c["hairpins"], course, a.map_dir)))
     return 0
 
 
