@@ -9,7 +9,8 @@ Each test is cut from its recording (`tests.jsonl`: `record`, `t_from`, `t_to`) 
 before it. Quiet stretches -- the car steady, nothing sliding -- play at `--fast` x (3). The HUD
 shows speed, longitudinal acceleration, sideslip (from the car's track against its heading,
 the ground truth), the tire panel (each tire coloured from grip to slide, the velocity against
-the nose) and, on soil pads, the deepest wheel's sinkage. Frames are the recorder's (20 a
+the nose), the rear-left wheel's camera with its slip ratio (framed green to red as it spins
+or locks) and, on soil pads, the deepest wheel's sinkage. Frames are the recorder's (20 a
 second of simulated time), so the video runs at the physics' own speed. System Python with
 Pillow and numpy; ffmpeg on PATH.
 """
@@ -30,7 +31,8 @@ CHART_S = 7.0       # s of the closing chart
 # s of a test at real speed; after it the rest plays at --fast x (the start's speed has
 # levelled off or the car is stuck, the turn has shown its slide or spin)
 FULL_S = {"start": 3.0, "turn": 3.5}
-DASH_CROP = 0.35    # the dash camera's top fraction cut off (sky)
+DASH_CROP = 0.35
+WHEEL_CROP = (0.22, 0.0, 0.72, 0.62)  # the wheel camera's frame around the tire (x0, y0, x1, y1)    # the dash camera's top fraction cut off (sky)
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
 BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 BG, FG, DIM, ACCENT, BAD, SOIL = (16, 16, 18), (240, 240, 240), (150, 150, 155), \
@@ -91,7 +93,7 @@ def tire_panel(d, x0, y0, r, beta_deg, s=1.0):
         pts = [P(lx + dx * a - dy * b, ly + dx * b + dy * a)
                for dx, dy in ((0.33, 0.12), (0.33, -0.12), (-0.33, -0.12), (-0.33, 0.12))]
         d.polygon(pts, fill=slide_color(slide(wh)))
-    if r["speed"] > 0.5:
+    if abs(r["speed"]) > 0.5:
         beta = math.radians(beta_deg)
         tip = P(mid + 3.2 * math.cos(beta), 3.2 * math.sin(beta))
         d.line([P(mid, 0), P(mid + 3.2, 0)], fill=DIM, width=1)
@@ -108,7 +110,7 @@ def sideslip(rows):
     for i, r in enumerate(rows):
         a, b = rows[max(0, i - 1)], rows[min(len(rows) - 1, i + 1)]
         dx, dy = b["x"] - a["x"], b["y"] - a["y"]
-        if r["speed"] < 1.0 or math.hypot(dx, dy) < 1e-3:
+        if abs(r["speed"]) < 1.0 or math.hypot(dx, dy) < 1e-3:
             out.append(0.0)
             continue
         d = math.degrees(math.atan2(dy, dx)) - r["yaw_deg"]
@@ -210,6 +212,24 @@ def test_frames(wr, t, fast, k, n):
             d.text((int(40 * s), y), txt, fill=col, font=font(int(sz * s), True))
             y += int(sz * s * 1.35)
         tire_panel(d, W - int(274 * s), H - int(294 * s), r, b, s)
+        wheel = os.path.join(rec, "wheel", f"{r['frame']:06d}.jpg")
+        if os.path.exists(wheel):  # the rear-left (driven) wheel: does it spin or lock?
+            ww = int(W * 0.16)
+            wimg = Image.open(wheel).convert("RGB")
+            iw0, ih0 = wimg.size
+            wimg = wimg.crop((int(iw0 * WHEEL_CROP[0]), int(ih0 * WHEEL_CROP[1]),
+                              int(iw0 * WHEEL_CROP[2]), int(ih0 * WHEEL_CROP[3])))
+            wh = int(ww * wimg.size[1] / wimg.size[0])
+            wx, wy = W - int(274 * s) - ww - int(16 * s), H - int(58 * s) - wh
+            img.paste(wimg.resize((ww, wh), Image.BILINEAR), (wx, wy))
+            rl = r["wheels"][2]
+            k = slide(rl)
+            d.rectangle((wx - 2, wy - 2, wx + ww + 1, wy + wh + 1), outline=slide_color(k),
+                        width=3)
+            sl = rl.get("slip")
+            text_box(d, (wx - 2, wy + wh + 3), "rear-left wheel" + ("" if sl is None else
+                                                                 f"  slip {sl:+.2f}"),
+                     int(18 * s), fill=slide_color(k) if k > 0.5 else FG, pad=5)
         wr.put(img)
 
 
