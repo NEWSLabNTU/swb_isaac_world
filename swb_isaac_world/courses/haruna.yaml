@@ -1,0 +1,21 @@
+# Mt. Haruna, Gunma road 33 (渋川松井田線) from the lake towards Ikaho: eight hairpins in about
+# 2 km (roadmap 058). Data: OpenStreetMap (ODbL, OpenStreetMap contributors); GSI 基盤地図情報
+# 数値標高モデル 5 m and シームレス空中写真 (出典：国土地理院).
+name: haruna
+# The map frame's origin: a local transverse Mercator here, z the elevation above origin.alt.
+origin: {lat: 36.494, lon: 138.903, alt: 1000.0}
+road:
+  overpass: way["highway"]["ref"="33"]
+  box: [36.44, 138.84, 36.53, 139.00]  # south, west, north, east
+  # the section, between the road points nearest these (lat, lon); it runs from the first to the
+  # second, downhill: 1.55 km, about 900 m down to 810 m, eight hairpins of 9-20 m radius (the
+  # whole way is 7.4 km from Ikaho at 740 m up to 1170 m with fourteen)
+  from: [36.49577, 138.90478]
+  to: [36.50132, 138.90631]
+  lanes: 2
+  lane_width: 3.25
+  shoulder: 0.75
+# Terrain and photo: the section's box plus this margin, m
+margin: 300.0
+dem: {layer: dem5a, zoom: 15}
+photo: {layer: seamlessphoto, zoom: 18}
