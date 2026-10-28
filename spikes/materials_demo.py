@@ -39,7 +39,7 @@ app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]
 import logging  # noqa: E402
 
 import yaml  # noqa: E402
-from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, Vt  # noqa: E402
+from pxr import Gf, Sdf, Usd, UsdGeom, UsdPhysics, UsdShade, Vt  # noqa: E402
 
 from swb_isaac_world.world import IsaacWorld  # noqa: E402
 
@@ -84,9 +84,17 @@ def lane(i):
     return LANE0 + PAD_W * i
 
 
+STRIPE_EVERY, STRIPE_W = 5.0, 0.25  # m: cross stripes on the plates, so speed and slides show
+# the plates' diffuse colours are scaled by this: under the default dome light and exposure a
+# colour renders ~3x brighter (dry asphalt 0.20 came out light grey, soft mud like sand)
+PLATE_GAIN = 0.35
+
+
 def make_ground(path, pads):
     """The physics ground (one flat mesh labelled Road, a triangle-mesh collider) and a plate
-    per pad, 2 mm above it, rendered only."""
+    per pad, 2 mm above it, rendered only. RTX ignores displayColor, so every plate gets a
+    UsdPreviewSurface of its colour, and cross stripes every STRIPE_EVERY m (a shade off the
+    plate's) so a camera following the car sees it move and slide."""
     stage = Usd.Stage.CreateNew(path)
     UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
     UsdGeom.SetStageMetersPerUnit(stage, 1.0)
@@ -108,7 +116,40 @@ def make_ground(path, pads):
         mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(idx))
         mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
         mesh.CreateDisplayColorAttr(Vt.Vec3fArray([Gf.Vec3f(*colour)]))
+        look(mesh.GetPrim(), colour)
         return mesh.GetPrim()
+
+    def look(prim, colour, roughness=0.8):
+        mat = UsdShade.Material.Define(stage, prim.GetPath().AppendChild("look"))
+        shader = UsdShade.Shader.Define(stage, mat.GetPath().AppendChild("surface"))
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(
+            Gf.Vec3f(*(PLATE_GAIN * c for c in colour)))
+        shader.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(roughness)
+        mat.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+
+    def stripes(prim_path, x0, x1, y0, y1, z, colour):
+        """One mesh of cross stripes, STRIPE_W wide, every STRIPE_EVERY m from x0 to x1."""
+        pts, idx, n = [], [], 0
+        x = x0
+        while x <= x1:
+            pts += [Gf.Vec3f(x, y0, z), Gf.Vec3f(x + STRIPE_W, y0, z),
+                    Gf.Vec3f(x + STRIPE_W, y1, z), Gf.Vec3f(x, y1, z)]
+            idx += [4 * n, 4 * n + 1, 4 * n + 2, 4 * n + 3]
+            n += 1
+            x += STRIPE_EVERY
+        mesh = UsdGeom.Mesh.Define(stage, prim_path)
+        mesh.CreatePointsAttr(Vt.Vec3fArray(pts))
+        mesh.CreateFaceVertexCountsAttr(Vt.IntArray([4] * n))
+        mesh.CreateFaceVertexIndicesAttr(Vt.IntArray(idx))
+        mesh.CreateSubdivisionSchemeAttr(UsdGeom.Tokens.none)
+        look(mesh.GetPrim(), colour)
+
+    def shade(colour):
+        """A stripe colour: darker on a light plate, lighter on a dark one."""
+        k = 0.6 if sum(colour) / 3 > 0.45 else 1.8
+        return tuple(min(1.0, c * k + (0.0 if k < 1 else 0.06)) for c in colour)
 
     x0, x1, y0, y1 = EXTENT
     ground = quad("/Root/Ground", x0, x1, y0, y1, 0.0, (0.25, 0.25, 0.27), 10.0)
@@ -120,6 +161,11 @@ def make_ground(path, pads):
     for i, (key, _, _, _, colour) in enumerate(pads):
         quad(f"/Root/Plates/{key}", PAD_X0, PAD_X1, lane(i) - 25.0, lane(i) + 35.0, 0.002,
              colour, 20.0)
+        stripes(f"/Root/Plates/{key}_stripes", PAD_X0, PAD_X1, lane(i) - 25.0, lane(i) + 35.0,
+                0.004, shade(colour))
+    # the run-up before the pads (asphalt-coloured ground), striped the same way
+    stripes("/Root/Plates/runup_stripes", x0, PAD_X0 - STRIPE_W, y0, y1, 0.004,
+            shade((0.25, 0.25, 0.27)))
     stage.GetRootLayer().Save()
 
 
@@ -231,11 +277,13 @@ def run(i, test):
             cmd.tire_angle = TURN_ANGLE * min(1.0, (t - t_go) / 0.2)
             done = t - t_go >= TURN_TIME
         if t_go is not None:
-            beta = math.degrees(math.atan2(s.velocity[1], max(abs(v), 0.5)))
-            peak_beta = max(peak_beta, abs(beta))
-            ws = surface.wheels.get(ego.vehicle.path) if surface is not None else None
-            sink = max((g or 0.0) for g in getattr(ws, "sinkage", ()) or (0.0,)) if ws else 0.0
-            peak_sink = max(peak_sink, sink)
+            if abs(v) > 1.0:  # below it a lateral creep or a wheelspin's jitter is no sideslip
+                peak_beta = max(peak_beta, abs(math.degrees(math.atan2(s.velocity[1], abs(v)))))
+            if surface is not None:  # the soil's sinkage per wheel, as the recorder reads it
+                for i in range(4):
+                    out = surface.soil_out.get((ego.vehicle.path, i))
+                    if out is not None:
+                        peak_sink = max(peak_sink, out[0].sinkage)
             rows.append((round(t, 3), round(x, 2), round(y, 2), round(v, 3)))
         if done:
             break
