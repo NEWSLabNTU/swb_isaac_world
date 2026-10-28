@@ -6,6 +6,14 @@ the run's lane and drive it down by pure pursuit, filmed (C9a).
     # S_END=600 (m along the centreline to stop at), SPEED=8 (m/s), HAIRPIN_SPEED=5 (m/s
     # within HAIRPIN_NEAR m of a hairpin's apex), EGO_RIG=drift_mustang.rig.yaml
 
+With DRIFT=<point name> (course/drift_points.yaml, e.g. H1) it drifts that hairpin with
+autoware-drift's drift_controller law (no ROS, no Autoware: the lane stands in for Autoware's
+trajectory): the car comes up to the point at ENTRY m/s (default 12), the law takes it from
+`trigger_distance`, and the run ends DRIFT_AFTER m (default 60) past the point or when the law
+hands back. LAW_PARAMS="k=v,..." overrides law.Params (angles in deg where the field is an
+angle); AUTOWARE_DRIFT is the checkout (default ~/repos/autoware-drift). `<out>/drift.jsonl`
+has every frame of the drift (phase, sideslip, yaw rate, distance off the lane, contacts).
+
 It answers C9a's questions: the world loads and renders (the recorder's cameras, the course
 camera among them), the car stands on the road ribbon, not in or under the terrain, and it
 can drive the lane through the hairpins. Per second it logs the car's position, height over
@@ -49,6 +57,11 @@ SPEED = float(os.environ.get("SPEED", "8"))
 HAIRPIN_SPEED = float(os.environ.get("HAIRPIN_SPEED", "5"))
 HAIRPIN_NEAR = 30.0  # m of the centreline either side of a hairpin's apex
 TIME_LIMIT = 400.0  # s of simulated time
+DRIFT = os.environ.get("DRIFT")
+ENTRY = float(os.environ.get("ENTRY", "12"))
+DRIFT_AFTER = float(os.environ.get("DRIFT_AFTER", "60"))
+ANGLES = {"max_steer", "enter_sideslip", "target_sideslip", "hold_angle", "exit_lead", "beta_min",
+          "beta_max", "exit_sideslip", "max_sideslip", "recover_sideslip"}
 
 os.makedirs(OUT, exist_ok=True)
 world_cfg = yaml.safe_load(open(os.path.join(MAP, "isaac/world.yaml")))
@@ -104,7 +117,29 @@ ego.before_substep = before_substep
 cmd.gear, cmd.received = GEAR_DRIVE, True
 apex = np.array([h["s"] for h in hairpins])
 
+law, drift_s, drift_rows = None, None, []
+if DRIFT:
+    sys.path.insert(0, os.path.join(os.environ.get("AUTOWARE_DRIFT", os.path.expanduser(
+        "~/repos/autoware-drift")), "src/control/drift_controller"))
+    from drift_controller import law as dl  # noqa: E402
+
+    pts = yaml.safe_load(open(os.path.join(MAP, "course/drift_points.yaml")))["points"]
+    pt = next(q for q in pts if q["name"] == DRIFT)
+    params = dl.Params()
+    for kv in filter(None, os.environ.get("LAW_PARAMS", "").split(",")):
+        k, v = kv.split("=")
+        setattr(params, k, math.radians(float(v)) if k in ANGLES else type(getattr(params, k))(float(v)))
+    params.min_entry_speed = min(params.min_entry_speed, ENTRY - 1.0)
+    law = dl.DriftController([dl.DriftPoint(pt["x"], pt["y"], pt["radius"], pt["name"],
+                                            math.radians(pt["angle_deg"]))], params)
+    d_pt = np.hypot(lane[:, 0] - pt["x"], lane[:, 1] - pt["y"])
+    drift_s = float(c["s"][int(np.argmin(d_pt))])
+    S_END = drift_s + DRIFT_AFTER
+    log.info("drift %s at s %.1f, R %.1f, %d deg, entry %.1f m/s, params %s", DRIFT, drift_s,
+             pt["radius"], pt["angle_deg"], ENTRY, os.environ.get("LAW_PARAMS", ""))
+
 t, i_near, rows, worst_off, worst_dz = 0.0, i0, [], 0.0, 0.0
+contacts_now, all_contacts = [], []
 result = "timeout"
 while t < TIME_LIMIT:
     s = ego.state
@@ -121,18 +156,45 @@ while t < TIME_LIMIT:
     if s_now >= S_END:
         result = "reached"
         break
-    if t > 10.0 and off > 6.0:
+    if t > 10.0 and off > (12.0 if law is not None and law.phase is not dl.Phase.CRUISE else 6.0):
         result = "off the lane"
         break
     near_hp = len(apex) and np.min(np.abs(apex - s_now)) < HAIRPIN_NEAR
     target = HAIRPIN_SPEED if near_hp else SPEED
+    if law is not None and drift_s - 120.0 < s_now < drift_s + 5.0:
+        target = ENTRY  # the run-up: the drift's entry speed
     cmd.acceleration = max(-3.0, min(2.0, 1.5 * (target - v)))
     cmd.velocity = target
     look = max(5.0, 0.9 * abs(v))
     j = min(len(lane) - 1, i_near + int(look / STEP))
     a = math.atan2(lane[j, 1] - y, lane[j, 0] - x) - yaw
     a = math.remainder(a, math.tau)
-    cmd.tire_angle = max(-0.6, min(0.6, math.atan2(2 * WB * math.sin(a), look)))
+    pursuit = max(-0.6, min(0.6, math.atan2(2 * WB * math.sin(a), look)))
+    cmd.tire_angle = pursuit
+    if law is not None:
+        # the lane as Autoware's trajectory: the car's signed distance (+ left) and heading error
+        hdg = float(c["heading"][i_near])
+        lat = -(x - lane[i_near, 0]) * math.sin(hdg) + (y - lane[i_near, 1]) * math.cos(hdg)
+        vx_b, vy_b = s.velocity[0], s.velocity[1]
+        st = dl.State(x, y, yaw, vx_b, vy_b, float(s.angular_velocity[2]),
+                      path_lat=lat, path_yaw=math.remainder(yaw - hdg, math.tau),
+                      path_steer=pursuit, path_speed=target)
+        dc = law.step(st, FRAME)
+        if dc.override:
+            cmd.tire_angle = dc.steer
+            cmd.acceleration = dc.accel
+            cmd.velocity = 60.0 if dc.accel > 0 else 0.0
+        if law.phase is not dl.Phase.CRUISE or drift_rows:
+            drift_rows.append({"t": round(t, 2), "s": round(s_now, 1), "phase": law.phase.value,
+                               "speed": round(st.speed, 2), "beta_deg": round(math.degrees(st.beta), 1),
+                               "r": round(st.r, 3), "steer_deg": round(math.degrees(cmd.tire_angle), 1),
+                               "accel": round(cmd.acceleration, 2), "off_lane": round(lat, 2),
+                               "x": round(x, 2), "y": round(y, 2), "contacts": contacts_now})
+        if drift_rows and law.phase is dl.Phase.CRUISE and any(
+                r["phase"] != "cruise" for r in drift_rows) and law.log and \
+                law.log[-1][0] == "cruise":
+            result = "handed back"
+            break
     if int(t / FRAME) % int(1.0 / FRAME) == 0:
         row = {"t": round(t, 1), "s": round(s_now, 1), "x": round(x, 2), "y": round(y, 2),
                "z": round(z, 2), "dz_road": round(dz, 2), "off_lane": round(off, 2),
@@ -141,11 +203,27 @@ while t < TIME_LIMIT:
         log.info("probe %s", json.dumps(row))
         with open(os.path.join(OUT, "probe.jsonl"), "a") as f:
             f.write(json.dumps(row) + "\n")
-    world.step({}, SUBSTEPS, DT, True, sim_time=t)
+    _, contacts = world.step({}, SUBSTEPS, DT, True, sim_time=t)
+    contacts_now = [str(cp[2]) for cp in contacts]
+    if contacts_now:
+        all_contacts.extend(contacts_now)
     t += FRAME
 
+if drift_rows:
+    with open(os.path.join(OUT, "drift.jsonl"), "w") as f:
+        for r in drift_rows:
+            f.write(json.dumps(r) + "\n")
 summary = {"result": result, "t": round(t, 1), "s_reached": rows[-1]["s"] if rows else None,
            "worst_off_lane_m": round(worst_off, 2), "worst_dz_road_m": round(worst_dz, 2),
-           "record": world.recorder.dir if world.recorder is not None else None}
+           "record": world.recorder.dir if world.recorder is not None else None,
+           "contacts": sorted(set(all_contacts))[:20]}
+if law is not None:
+    hold = [r for r in drift_rows if r["phase"] == "hold"]
+    summary.update({"drift": DRIFT, "law_log": law.log,
+                    "peak_beta_deg": max((abs(r["beta_deg"]) for r in drift_rows), default=0.0),
+                    "hold_s": round(len(hold) * FRAME, 2),
+                    "hold_beta_deg_mean": round(float(np.mean([abs(r["beta_deg"]) for r in hold])), 1)
+                    if hold else None,
+                    "worst_off_lane_in_drift_m": max((abs(r["off_lane"]) for r in drift_rows), default=0.0)})
 print("SPIKE-RESULT " + json.dumps(summary), flush=True)
 app.close()

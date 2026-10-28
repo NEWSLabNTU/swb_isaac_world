@@ -59,10 +59,23 @@ def _material(stage, path, colour=None, texture=None, roughness=0.85):
     return mat
 
 
+def _face_up(points, faces):
+    """Every quad wound counterclockwise seen from above (its normal up): PhysX's scene
+    queries, the wheels' suspension rays among them, miss a triangle hit from behind, so a
+    ground ribbon wound the other way is not there for the wheels (issue 021)."""
+    p0, p1, p2 = (points[faces[:, k]] for k in range(3))
+    down = np.cross(p1 - p0, p2 - p0)[:, 2] < 0
+    out = faces.copy()
+    out[down] = faces[down][:, [0, 3, 2, 1]]
+    return out
+
+
 def _mesh(stage, path, points, faces, uv=None, normals=None, collider=False, label=None,
           material=None):
+    """A ground mesh of quads (every course mesh is one: terrain, road, lines), faces up."""
     from pxr import Sdf, UsdGeom, UsdPhysics, UsdShade, Vt
 
+    faces = _face_up(points, faces)
     mesh = UsdGeom.Mesh.Define(stage, path)
     mesh.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(points.astype(np.float32)))
     mesh.CreateFaceVertexCountsAttr(Vt.IntArray([4] * len(faces)))
