@@ -29,6 +29,7 @@ LINE_COLOURS = {"line_centre": (0.85, 0.66, 0.08), "line_left": (0.9, 0.9, 0.9),
 QCODE = "semantics:labels:wikidata_qcode"
 LABELS = {"Terrain": "Q186131", "Road": "Q34442", "Lines": "Q1392287"}
 DEFAULT = "/Course"
+LINK = "carla-usd"  # beside the world: a symlink to $CARLA_USD (issue 020)
 
 
 def _material(stage, path, colour=None, texture=None, roughness=0.85):
@@ -105,15 +106,26 @@ def add_props(stage, course, m, c, work, rng):
 
     from . import props as pr
 
-    root = os.environ.get("CARLA_USD", "/mnt/disk1/carla-usd")
+    # The assets go through a link beside the world, so the map data moves between hosts
+    # (issue 020): <isaac dir>/carla-usd -> $CARLA_USD, referenced as ./carla-usd/<asset>.
+    root = os.path.realpath(os.environ.get("CARLA_USD", "/mnt/disk1/carla-usd"))
+    link = os.path.join(os.path.dirname(stage.GetRootLayer().realPath), LINK)
+    if os.path.islink(link) or os.path.exists(link):
+        os.remove(link)
+    os.symlink(root, link)
+
+    def ref(asset):
+        """(the layer-relative reference, the path to read the asset from here)"""
+        return f"./{LINK}/{asset}", os.path.join(link, asset)
+
     spec = course.get("props") or {}
     half = float(m["half_width"])
     near = cKDTree(np.stack([c["x"], c["y"]], axis=1))
     samples = []
     UsdGeom.Xform.Define(stage, DEFAULT + "/Props")
     if spec.get("guardrail"):
-        rail = os.path.join(root, spec["guardrail"])
-        a, b, cc = pr.asset_surface(rail)
+        rail, rail_file = ref(spec["guardrail"])
+        a, b, cc = pr.asset_surface(rail_file)
         seg_len = float(max(a[:, 0].max(), b[:, 0].max(), cc[:, 0].max()))
         rail_pts = pr.sample_surface((a, b, cc), pr.SAMPLE_DENSITY, rng)
         UsdGeom.Xform.Define(stage, DEFAULT + "/Props/Guardrails")
@@ -134,13 +146,13 @@ def add_props(stage, course, m, c, work, rng):
             UsdPhysics.CollisionAPI.Apply(box.GetPrim())
             pts = rail_pts * np.array([length / seg_len, 1.0, 1.0])
             samples.append(pr.place(pts, x, y, z, yaw))
-    kinds = [os.path.join(root, t) for t in spec.get("trees", [])]
+    kinds = [ref(t) for t in spec.get("trees", [])]
     if kinds:
         t = pr.trees(c, m, half, os.path.join(work, "photo.jpg"), float(spec.get("tree_spacing", 7.0)),
                      float(spec.get("tree_band", 90.0)), len(kinds), rng)
         inst = UsdGeom.PointInstancer.Define(stage, DEFAULT + "/Props/Trees")
         protos = []
-        for k, path in enumerate(kinds):
+        for k, (path, _) in enumerate(kinds):
             proto = stage.DefinePrim(f"{DEFAULT}/Props/Trees/kind{k}", "Xform")
             proto.GetReferences().AddReference(path)
             protos.append(proto.GetPath())
@@ -149,7 +161,7 @@ def add_props(stage, course, m, c, work, rng):
         inst.CreatePositionsAttr(Vt.Vec3fArray([Gf.Vec3f(*r[:3]) for r in t]))
         inst.CreateOrientationsAttr(Vt.QuathArray([Gf.Quath(math.cos(r[3] / 2), 0, 0, math.sin(r[3] / 2)) for r in t]))
         inst.CreateScalesAttr(Vt.Vec3fArray([Gf.Vec3f(r[4], r[4], r[4]) for r in t]))
-        surf = [pr.sample_surface(pr.asset_surface(p), pr.SAMPLE_DENSITY / 4, rng) for p in kinds]
+        surf = [pr.sample_surface(pr.asset_surface(f), pr.SAMPLE_DENSITY / 4, rng) for _, f in kinds]
         d, _ = near.query(t[:, :2])
         for r in t[d < pr.MAP_REACH]:
             samples.append(pr.place(surf[int(r[5])], r[0], r[1], r[2], r[3], r[4]))
