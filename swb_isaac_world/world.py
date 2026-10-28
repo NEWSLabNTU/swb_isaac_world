@@ -1163,6 +1163,7 @@ class IsaacWorld(WorldBase):
         t2 = time.perf_counter()
         if self.recorder is not None and render:
             self.recorder.capture(sim_time + substeps * dt, self.surface, self.ego_ros)
+            self.recorder.place_course(substeps * dt)  # for the next frame's render
         if self.follow and egos:
             self._follow(egos[0])
         end = sim_time + substeps * dt

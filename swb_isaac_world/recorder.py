@@ -4,7 +4,10 @@ The first ego a scenario spawns gets three cameras of its own, under its body so
 them: a dash camera where the rig's `camera6` sits (whether or not that sensor is on), a
 low wheel camera behind and outside the rear-left wheel looking forward and down at it, so
 the wheel's sinkage is in the picture, and a chase camera behind and above the car, which
-keeps the car and each ground it crosses in view (a run over several zones). A fourth stands still beside the first soil zone ahead
+keeps the car and each ground it crosses in view (a run over several zones). The chase camera turns
+with the car, so a drift does not show in it; the course camera does: it is not under the body
+but placed after every frame behind the car along its velocity, so a car sliding sideways shows
+its side to it by its sideslip angle (scenario-world-bridge docs/issues/019). Another stands still beside the first soil zone ahead
 of the ego at its spawn, past the zone's far end, looking back along the ego's line: the
 render mesh shows a tile's ruts only once the wheels are 3 m past it (`soil_tiles`), so they
 appear behind the car, which the wheel camera never sees. Every frame the world server
@@ -14,7 +17,7 @@ computers estimated and did (`ecu`: speed, friction, sideslip, ABS and TC factor
 wheel torques). Written by a thread, so
 the frame does not wait for the disk.
 
-    <dir>/<time>-<ego name>/dash/000123.jpg, wheel/..., chase/..., track/..., state.jsonl
+    <dir>/<time>-<ego name>/dash/000123.jpg, wheel/..., chase/..., course/..., track/..., state.jsonl
 
 Not for runs that are judged: more render products cost frame time, and each new one keeps a
 little memory after it is gone (docs/issues/003).
@@ -44,6 +47,10 @@ CHASE_AT = (3.0, 0.0, 0.3)
 CHASE_FOV = 60.0
 # The trackside camera: past the zone's far end and to the right of the ego's line, m.
 TRACK_BEYOND, TRACK_SIDE, TRACK_HEIGHT, TRACK_FOV = 3.0, 2.6, 1.3, 60.0
+# The course camera: behind and above the car along its velocity, looking just past its nose, m;
+# the velocity's direction is smoothed over COURSE_TAU s, and below COURSE_MIN_SPEED the heading is used.
+COURSE_BACK, COURSE_UP, COURSE_AHEAD, COURSE_FOV = 9.0, 3.2, 4.0, 60.0
+COURSE_TAU, COURSE_MIN_SPEED = 0.3, 2.0
 
 
 def _look_at(eye, at):
@@ -89,7 +96,7 @@ class Recorder:
         self.ego = ego
         self.stage = stage
         self.dir = os.path.join(root, time.strftime("%Y-%m-%d_%H-%M-%S") + f"-{name}")
-        for d in ("dash", "wheel", "chase", "track"):
+        for d in ("dash", "wheel", "chase", "course", "track"):
             os.makedirs(os.path.join(self.dir, d), exist_ok=True)
         self.state = open(os.path.join(self.dir, "state.jsonl"), "w")
         w, h = SIZE
@@ -117,7 +124,12 @@ class Recorder:
         chase.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*CHASE_EYE))
         chase.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
             Gf.Quatd(*_look_at(CHASE_EYE, CHASE_AT)))
-        cams = [("dash", dash), ("wheel", wheel), ("chase", chase)]
+        course = camera("/World/rec_course", COURSE_FOV)
+        self.course_ops = (course.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble),
+                           course.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble))
+        self.course_dir = None
+        self.place_course(0.0)
+        cams = [("dash", dash), ("wheel", wheel), ("chase", chase), ("course", course)]
         track = self._trackside(stage, ego, surface, camera)
         if track is not None:
             cams.append(("track", track))
@@ -164,6 +176,33 @@ class Recorder:
             Gf.Quatd(*_look_at(eye, at)))
         log.info("recorder: trackside camera at (%.1f, %.1f, %.1f) on zone %s", *eye, zone.id)
         return cam
+
+    def place_course(self, dt):
+        """Put the course camera where it should be for the next render, `dt` from now: behind
+        the car along its (smoothed) velocity, looking just past its nose."""
+        from pxr import Gf
+
+        from .motion import rotate
+
+        s = self.ego.state
+        w, qx, qy, qz = s.quat
+        yaw = math.atan2(2 * (w * qz + qx * qy), 1 - 2 * (qy * qy + qz * qz))
+        v = rotate(s.quat, s.velocity)  # base_link's velocity, in the world
+        speed = math.hypot(v[0], v[1])
+        want = (v[0] / speed, v[1] / speed) if speed > COURSE_MIN_SPEED else (math.cos(yaw), math.sin(yaw))
+        if self.course_dir is None or dt <= 0.0:
+            self.course_dir = want
+        else:
+            k = min(1.0, dt / COURSE_TAU)
+            ux, uy = (1 - k) * self.course_dir[0] + k * want[0], (1 - k) * self.course_dir[1] + k * want[1]
+            n = math.hypot(ux, uy) or 1.0
+            self.course_dir = (ux / n, uy / n)
+        ux, uy = self.course_dir
+        x, y, z = (p + vi * dt for p, vi in zip(s.position, v))
+        eye = (x - COURSE_BACK * ux, y - COURSE_BACK * uy, z + COURSE_UP)
+        at = (x + COURSE_AHEAD * ux, y + COURSE_AHEAD * uy, z + 0.5)
+        self.course_ops[0].Set(Gf.Vec3d(*eye))
+        self.course_ops[1].Set(Gf.Quatd(*_look_at(eye, at)))
 
     def warm_up(self, step, frames=60):
         """Step (physics and a render) until every camera delivers a picture: a render
@@ -270,8 +309,9 @@ class Recorder:
                 rp.destroy()
             except Exception:  # noqa: BLE001
                 log.exception("recorder %s camera teardown", kind)
-        if self.stage.GetPrimAtPath("/World/rec_track"):
-            self.stage.RemovePrim("/World/rec_track")
+        for path in ("/World/rec_track", "/World/rec_course"):
+            if self.stage.GetPrimAtPath(path):
+                self.stage.RemovePrim(path)
         self.queue.put(None)
         self.writer.join(timeout=30)
         self.state.close()
