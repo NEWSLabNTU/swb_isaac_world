@@ -1,5 +1,5 @@
 """`python3 -m swb_isaac_world.course <course.yaml> <map dir> [steps...]` (steps: fetch,
-centreline; all by default). See the package's docstring and roadmap 058."""
+centreline, geometry, maps; all by default; the USD world is `swb_isaac_world.course.usd`). See the package's docstring and roadmap 058."""
 import argparse
 import json
 import os
@@ -10,8 +10,10 @@ import yaml
 
 from . import centreline as cl
 from . import data
+from . import geometry
+from . import maps
 
-STEPS = ("fetch", "centreline")
+STEPS = ("fetch", "centreline", "geometry", "maps")
 
 
 def section_box(course, frame, pts=None):
@@ -67,6 +69,36 @@ def plot(c, photo, block, z, frame, out):
     out_img.save(out, quality=88)
 
 
+def preview(meshes, photo, out):
+    """A shaded relief of the terrain with the photo blended in and the road on top, from above:
+    a check of the cut and fill and of the photo's placement, no renderer needed."""
+    from PIL import Image, ImageDraw
+
+    m = np.load(meshes)
+    ny, nx = (int(v) for v in m["terrain_shape"])
+    z = m["terrain_points"][:, 2].reshape(ny, nx)
+    gy, gx = np.gradient(z, 2.0)
+    shade = np.clip(0.55 + 0.45 * (-gx * 0.6 + gy * 0.6) / np.sqrt(1 + gx * gx + gy * gy), 0, 1)
+    uv = m["terrain_uv"].reshape(ny, nx, 2)
+    ph = Image.open(photo).convert("RGB")
+    W, H = ph.size
+    pa = np.asarray(ph)
+    ui = np.clip((uv[..., 0] * W).astype(int), 0, W - 1)
+    vi = np.clip(((1 - uv[..., 1]) * H).astype(int), 0, H - 1)
+    rgb = pa[vi, ui].astype(float) * shade[..., None]
+    img = Image.fromarray(np.flipud(rgb.astype(np.uint8)))  # north up
+    d = ImageDraw.Draw(img)
+    x0, x1, y0, y1 = m["box"]
+    P = lambda x, y: ((x - x0) / 2.0, (y1 - y) / 2.0)
+    rp, rf = m["road_points"], m["road_faces"]
+    for f in rf[::2]:
+        d.polygon([P(*rp[k][:2]) for k in f], fill=(70, 70, 75))
+    lp = m["line_centre_points"]
+    n = len(lp) // 2
+    d.line([P(*lp[k][:2]) for k in range(n)], fill=(240, 200, 40), width=1)
+    img.save(out, quality=88)
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("course")
@@ -111,6 +143,15 @@ def main(argv=None):
     for i, h in enumerate(c["hairpins"]):
         print(f"H{i + 1}: s {h['s']:7.1f} m  ({h['x']:7.1f}, {h['y']:7.1f})  R {h['radius']:5.1f} m  "
               f"turn {h['turn_deg']:+6.1f} deg  {h['direction']}")
+    if "geometry" in a.steps:
+        g = geometry.build(c, course, dem, frame, photo_block, pz, os.path.join(work, "meshes.npz"))
+        print("geometry:", json.dumps(g))
+        preview(os.path.join(work, "meshes.npz"), os.path.join(work, "photo.jpg"),
+                os.path.join(work, "terrain_preview.jpg"))
+    if "maps" in a.steps:
+        mp = maps.build(c, course, frame, a.map_dir, course.get("speed_limit_kmh", 60.0))
+        json.dump(mp, open(os.path.join(work, "maps.json"), "w"), indent=1)
+        print("maps:", json.dumps({k: (v if not isinstance(v, list) else len(v)) for k, v in mp.items()}))
     return 0
 
 
