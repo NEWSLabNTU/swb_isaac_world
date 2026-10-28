@@ -12,7 +12,7 @@ The point cloud: the triangles the lidar sees, sampled. The terrain grid's quads
 from their first corner to their third, as the renderer splits them, so a point lies on the
 surface the lidar's ray hits and not on a bilinear patch near it. Within `NEAR` m of the road
 the sampling is `STEP_NEAR`, beyond it `STEP_FAR`; the road at `STEP_NEAR`. Written as a binary
-PCD of x, y, z (float32), as Autoware's map loader reads.
+PCD of x, y, z (float32), as Autoware's map loader reads, thinned to one point per `VOXEL`.
 """
 import os
 
@@ -22,6 +22,7 @@ CHUNK = 100.0       # m of road per lanelet
 STEP_NEAR = 0.25    # m
 STEP_FAR = 1.0      # m
 NEAR = 120.0        # m from the centreline
+VOXEL = 0.2         # m: the cloud keeps one point per voxel this size
 
 
 def _sample_points(c, step):
@@ -163,7 +164,11 @@ def point_cloud(m, c, out, extra=()):
     parts = [_sample_terrain(m, c, rng), _sample_ribbon(m["road_points"], m["road_faces"],
                                                         STEP_NEAR, rng)]
     parts += list(extra)
-    pts = np.concatenate(parts).astype(np.float32)
+    pts = np.concatenate(parts)
+    # one point per VOXEL cube (the trees' foliage alone would be millions of points)
+    key = np.floor(pts / VOXEL).astype(np.int64)
+    _, first = np.unique(key, axis=0, return_index=True)
+    pts = pts[np.sort(first)].astype(np.float32)
     with open(out, "wb") as f:
         f.write(("# .PCD v0.7 - swb_isaac_world.course (roadmap 058)\nVERSION 0.7\n"
                  "FIELDS x y z\nSIZE 4 4 4\nTYPE F F F\nCOUNT 1 1 1\n"
@@ -189,6 +194,10 @@ def build(c, course, frame, map_dir, speed_limit_kmh=60.0):
     m = np.load(os.path.join(map_dir, "course", "meshes.npz"))
     along, back = lanelets(c, course, frame, os.path.join(map_dir, "lanelet2_map.osm"),
                            speed_limit_kmh)
-    n = point_cloud(m, c, os.path.join(map_dir, "pointcloud_map.pcd"))
+    extra = []
+    props = os.path.join(map_dir, "course", "props_points.npy")
+    if os.path.exists(props):  # the USD step's guardrails and trees (C5)
+        extra.append(np.load(props))
+    n = point_cloud(m, c, os.path.join(map_dir, "pointcloud_map.pcd"), extra)
     projector(frame, map_dir)
     return {"lanelets_along": along, "lanelets_back": back, "pcd_points": n}

@@ -19,3 +19,13 @@ road:
 margin: 300.0
 dem: {layer: dem5a, zoom: 15}
 photo: {layer: seamlessphoto, zoom: 18}
+speed_limit_kmh: 60
+# C5's props, from the CARLA 0.9.16 Isaac set ($CARLA_USD): a guardrail where the ground falls
+# away beside the road and outside the hairpins, and trees where the photo is forest
+props:
+  guardrail: Town01/Props/SM_Guardrail_02.usd
+  trees: [Town01/Props/SM_TreePine_1.usd, Town01/Props/SM_TreePine_2.usd,
+          Town01/Props/SM_TreePine_3.usd, Town01/Props/SM_Beech.usd,
+          Town02/Props/SM_Japanese_Maple_01.usd]
+  tree_spacing: 7.0     # m between trees in the forest
+  tree_band: 90.0       # m from the road they stand in

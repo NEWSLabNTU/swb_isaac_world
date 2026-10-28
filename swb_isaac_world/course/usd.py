@@ -3,7 +3,10 @@
 Run by Isaac's Python (it has `pxr`; the system Python, which made the meshes, has pyproj and
 lanelet2 instead):
 
-    $ISAAC_ROOT/venv/bin/python -m swb_isaac_world.course.usd <map dir>
+    $ISAAC_ROOT/venv/bin/python -m swb_isaac_world.course.usd <course.yaml> <map dir>
+
+after the system Python's `geometry` step and before its `maps` step, which samples the props
+this writes (`course/props_points.npy`) into the point cloud.
 
 One stage, metres, z up, in the map frame (`map_origin` 0): the terrain, its aerial photo as
 its texture, labelled Terrain; the road, labelled Road; its lines, labelled RoadLine (CARLA's
@@ -13,6 +16,7 @@ millimetres above the road and are not colliders. The sun and sky are the world 
 the map's latitude.
 """
 import argparse
+import math
 import os
 import shutil
 import sys
@@ -93,7 +97,70 @@ def _grid_normals(points, shape):
     return n.reshape(-1, 3)
 
 
-def build(map_dir):
+def add_props(stage, course, m, c, work, rng):
+    """C5: guardrails (with box colliders) and trees (a PointInstancer); returns the props'
+    surface points within the map's reach, for the point cloud."""
+    from pxr import Gf, UsdGeom, UsdPhysics, Vt
+    from scipy.spatial import cKDTree
+
+    from . import props as pr
+
+    root = os.environ.get("CARLA_USD", "/mnt/disk1/carla-usd")
+    spec = course.get("props") or {}
+    half = float(m["half_width"])
+    near = cKDTree(np.stack([c["x"], c["y"]], axis=1))
+    samples = []
+    UsdGeom.Xform.Define(stage, DEFAULT + "/Props")
+    if spec.get("guardrail"):
+        rail = os.path.join(root, spec["guardrail"])
+        a, b, cc = pr.asset_surface(rail)
+        seg_len = float(max(a[:, 0].max(), b[:, 0].max(), cc[:, 0].max()))
+        rail_pts = pr.sample_surface((a, b, cc), pr.SAMPLE_DENSITY, rng)
+        UsdGeom.Xform.Define(stage, DEFAULT + "/Props/Guardrails")
+        segs = pr.guardrails(c, m, half, seg_len)
+        print(f"props: {len(segs)} guardrail segments, {sum(s[4] for s in segs):.0f} m")
+        for n, (x, y, z, yaw, length) in enumerate(segs):
+            p = f"{DEFAULT}/Props/Guardrails/g{n}"
+            xf = UsdGeom.Xform.Define(stage, p)
+            xf.AddTranslateOp().Set(Gf.Vec3d(x, y, z))
+            xf.AddRotateZOp().Set(math.degrees(yaw))
+            xf.AddScaleOp().Set(Gf.Vec3f(length / seg_len, 1.0, 1.0))
+            xf.GetPrim().GetReferences().AddReference(rail)
+            box = UsdGeom.Cube.Define(stage, p + "/collider")
+            box.CreateSizeAttr(1.0)
+            box.AddTranslateOp().Set(Gf.Vec3d(seg_len / 2, 0.1, 0.4))
+            box.AddScaleOp().Set(Gf.Vec3f(seg_len, 0.3, 0.8))
+            box.CreatePurposeAttr(UsdGeom.Tokens.guide)
+            UsdPhysics.CollisionAPI.Apply(box.GetPrim())
+            pts = rail_pts * np.array([length / seg_len, 1.0, 1.0])
+            samples.append(pr.place(pts, x, y, z, yaw))
+    kinds = [os.path.join(root, t) for t in spec.get("trees", [])]
+    if kinds:
+        t = pr.trees(c, m, half, os.path.join(work, "photo.jpg"), float(spec.get("tree_spacing", 7.0)),
+                     float(spec.get("tree_band", 90.0)), len(kinds), rng)
+        inst = UsdGeom.PointInstancer.Define(stage, DEFAULT + "/Props/Trees")
+        protos = []
+        for k, path in enumerate(kinds):
+            proto = stage.DefinePrim(f"{DEFAULT}/Props/Trees/kind{k}", "Xform")
+            proto.GetReferences().AddReference(path)
+            protos.append(proto.GetPath())
+        inst.CreatePrototypesRel().SetTargets(protos)
+        inst.CreateProtoIndicesAttr(Vt.IntArray([int(v) for v in t[:, 5]]))
+        inst.CreatePositionsAttr(Vt.Vec3fArray([Gf.Vec3f(*r[:3]) for r in t]))
+        inst.CreateOrientationsAttr(Vt.QuathArray([Gf.Quath(math.cos(r[3] / 2), 0, 0, math.sin(r[3] / 2)) for r in t]))
+        inst.CreateScalesAttr(Vt.Vec3fArray([Gf.Vec3f(r[4], r[4], r[4]) for r in t]))
+        surf = [pr.sample_surface(pr.asset_surface(p), pr.SAMPLE_DENSITY / 4, rng) for p in kinds]
+        d, _ = near.query(t[:, :2])
+        for r in t[d < pr.MAP_REACH]:
+            samples.append(pr.place(surf[int(r[5])], r[0], r[1], r[2], r[3], r[4]))
+        print(f"props: {len(t)} trees")
+    pts = np.concatenate(samples) if samples else np.zeros((0, 3))
+    np.save(os.path.join(work, "props_points.npy"), pts.astype(np.float32))
+    print(f"props: {len(pts)} map points")
+    return pts
+
+
+def build(map_dir, course=None):
     from pxr import Sdf, Usd, UsdGeom
 
     work = os.path.join(map_dir, "course")
@@ -124,6 +191,9 @@ def build(map_dir):
     for k, colour in LINE_COLOURS.items():
         mat = _material(stage, f"{DEFAULT}/Looks/{k}", colour=colour, roughness=0.6)
         _mesh(stage, f"{DEFAULT}/Lines/{k}", m[f"{k}_points"], m[f"{k}_faces"], material=mat)
+    if course is not None:
+        c = np.load(os.path.join(work, "centreline.npz"))
+        add_props(stage, course, m, c, work, np.random.default_rng(58))
     stage.GetRootLayer().Save()
     with open(os.path.join(out_dir, "world.yaml"), "w") as f:
         f.write("# Generated by swb_isaac_world.course.usd (roadmap 058): a course from open data,\n"
@@ -139,9 +209,12 @@ def build(map_dir):
 
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap.add_argument("course")
     ap.add_argument("map_dir")
     a = ap.parse_args(argv)
-    print(build(a.map_dir))
+    import yaml
+
+    print(build(a.map_dir, yaml.safe_load(open(a.course))))
     return 0
 
 
