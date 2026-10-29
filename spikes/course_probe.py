@@ -14,6 +14,20 @@ hands back. LAW_PARAMS="k=v,..." overrides law.Params (angles in deg where the f
 angle); AUTOWARE_DRIFT is the checkout (default ~/repos/autoware-drift). `<out>/drift.jsonl`
 has every frame of the drift (phase, sideslip, yaw rate, distance off the lane, contacts).
 
+With PLAN=<npz> (autoware-drift race_planner.plan's, on this course's map frame) it tracks that
+minimum-time trajectory instead: a pure-pursuit run-up on the centreline to the plan's first
+speed, then from the plan's first s its steering as feedforward with feedback on the CoM's
+offset from the planned path, the body's yaw from the planned yaw and its yaw rate from the
+planned one, and its wheel torques as the acceleration request (the ECU's own feedforward turns
+m a + road load back into those torques) with feedback on the speed, never past the plan's
+drive (the rear's grip: more only spins it). The drive and the brakes are eased, as a driver
+lifts or comes off the pedal, while the sideslip is off the plan's: from SLIP_CUT's first angle
+to none at its second (deg, default "3,10"); DRIVE_SHARE (default 1) of the plan's drive.
+TRACK_GAINS="k_lat,k_yaw,k_speed,k_r" (default 0.15,0.5,1.0,0.3; k_lat at 10 m/s and below,
+falling as 10 / v above); FRAME_MS, the control's frame (default 50; physics at 60 Hz or the
+frame's multiple above it). `<out>/plan_track.jsonl` has every frame; the result compares the
+section's time with the plan's.
+
 It answers C9a's questions: the world loads and renders (the recorder's cameras, the course
 camera among them), the car stands on the road ribbon, not in or under the terrain, and it
 can drive the lane through the hairpins. Per second it logs the car's position, height over
@@ -49,7 +63,8 @@ MAP = os.path.realpath(sys.argv[1])
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
     REPO, "play_log/course_probe", time.strftime("%Y-%m-%d_%H-%M-%S"))
 EGO_YAML = os.path.join(REPO, "src/autoware_isaac_bridge/src/aib/config/ego.yaml")
-FRAME, SUBSTEPS = 0.05, 3
+FRAME = float(os.environ.get("FRAME_MS", "50")) / 1000   # the control's frame; physics 60 Hz or faster
+SUBSTEPS = max(1, math.ceil(FRAME * 60 - 1e-9))
 DT = FRAME / SUBSTEPS
 S_START = 20.0  # m, as the scenario (course.scenario.START)
 S_END = float(os.environ.get("S_END", "600"))
@@ -58,6 +73,11 @@ HAIRPIN_SPEED = float(os.environ.get("HAIRPIN_SPEED", "5"))
 HAIRPIN_NEAR = 30.0  # m of the centreline either side of a hairpin's apex
 TIME_LIMIT = 400.0  # s of simulated time
 DRIFT = os.environ.get("DRIFT")
+PLAN = os.environ.get("PLAN")
+K_LAT, K_YAW, K_SPEED, K_R = (float(g) for g in
+                              os.environ.get("TRACK_GAINS", "0.15,0.5,1.0,0.3").split(","))
+SLIP_CUT = tuple(math.radians(float(a)) for a in os.environ.get("SLIP_CUT", "3,10").split(","))
+DRIVE_SHARE = float(os.environ.get("DRIVE_SHARE", "1.0"))   # of the plan's drive, a grip margin
 ENTRY = float(os.environ.get("ENTRY", "12"))
 DRIFT_AFTER = float(os.environ.get("DRIFT_AFTER", "60"))
 ANGLES = {"max_steer", "enter_sideslip", "target_sideslip", "hold_angle", "exit_lead", "beta_min",
@@ -117,6 +137,22 @@ ego.before_substep = before_substep
 cmd.gear, cmd.received = GEAR_DRIVE, True
 apex = np.array([h["s"] for h in hairpins])
 
+plan = None
+if PLAN:
+    plan = dict(np.load(PLAN))
+    S_END = float(plan["s"][-1]) - 2.0
+    spec = yaml.safe_load(open(os.path.join(REPO, "src/sim_vehicle_spec/vehicles/drift_mustang.yaml")))
+    MASS = spec["inertia"]["mass"]
+    RW = spec["geometry"]["wheel_radius"]
+    LR = WB * spec["inertia"]["com_front_fraction"]       # base_link (rear axle) to the CoM
+    res = spec["resistance"]
+    DRAG = 0.5 * res["air_density"] * res["drag_coefficient"] * res["frontal_area"]
+    ROLL = res["rolling_coefficient"]
+    STEER_MAX = spec["geometry"]["max_steer_angle"]
+    lane = np.stack([c["x"], c["y"]], axis=1)   # the run-up on the centreline, as the plan
+    log.info("plan %s: s %.0f-%.0f, %.2f s", PLAN, plan["s"][0], plan["s"][-1], float(plan["time"]))
+plan_rows, plan_j, plan_t0, plan_t1 = [], 0, None, None
+
 law, drift_s, drift_rows = None, None, []
 if DRIFT:
     sys.path.insert(0, os.path.join(os.environ.get("AUTOWARE_DRIFT", os.path.expanduser(
@@ -171,6 +207,54 @@ while t < TIME_LIMIT:
     a = math.remainder(a, math.tau)
     pursuit = max(-0.6, min(0.6, math.atan2(2 * WB * math.sin(a), look)))
     cmd.tire_angle = pursuit
+    if plan is not None:
+        cmd.acceleration = max(-3.0, min(2.0, 1.5 * (float(plan["speed"][0]) - v)))
+        cmd.velocity = float(plan["speed"][0])
+        yaw_r = float(s.angular_velocity[2])
+        xc, yc = x + LR * math.cos(yaw), y + LR * math.sin(yaw)    # the CoM, as the plan
+        vy_c = s.velocity[1] + yaw_r * LR
+        speed_c = math.hypot(s.velocity[0], vy_c)
+        lo2, hi2 = max(0, plan_j - 5), min(len(plan["s"]), plan_j + 40)
+        dj = np.hypot(plan["x"][lo2:hi2] - xc, plan["y"][lo2:hi2] - yc)
+        j = lo2 + int(np.argmin(dj))
+        if plan_t0 is None and j > 0 and s_now >= plan["s"][0]:
+            plan_t0 = t
+        if plan_t0 is not None:
+            plan_j = j
+            ps = float(plan["psi_path"][j])
+            e_lat = -(xc - plan["x"][j]) * math.sin(ps) + (yc - plan["y"][j]) * math.cos(ps)
+            e_yaw = math.remainder(yaw - float(plan["yaw"][j]), math.tau)
+            ahead = min(len(plan["s"]) - 1, j + 1)
+            k_lat = K_LAT * 10.0 / max(10.0, speed_c)
+            steer = (float(plan["delta"][ahead]) - k_lat * e_lat - K_YAW * e_yaw
+                     + K_R * (float(plan["r"][j]) - yaw_r))
+            cmd.tire_angle = max(-STEER_MAX, min(STEER_MAX, steer))
+            push = float(np.sum(plan["torque"][j])) / RW              # the plan's wheels, N
+            road = DRAG * speed_c * speed_c + ROLL * MASS * 9.81
+            a_ff = (push * (DRIVE_SHARE if push > 0 else 1.0) - road) / MASS
+            a = a_ff + K_SPEED * (float(plan["speed"][j]) - speed_c)
+            if a_ff > 0:   # the plan drives at the rear's grip: more only spins it
+                a = min(a, a_ff)
+            slip_err = abs(math.atan2(vy_c, s.velocity[0]) - float(plan["beta"][j]))
+            # off the plan's sideslip the tyres have no grip to spare: lift, or ease the brakes
+            a *= min(1.0, max(0.0, (SLIP_CUT[1] - slip_err) / (SLIP_CUT[1] - SLIP_CUT[0])))
+            cmd.acceleration = a
+            cmd.velocity = 60.0 if a > 0 else 0.0
+            plan_rows.append({"t": round(t - plan_t0, 3), "s": round(float(plan["s"][j]), 1),
+                              "t_plan": round(float(plan["t"][j]), 3), "e_lat": round(e_lat, 3),
+                              "e_yaw_deg": round(math.degrees(e_yaw), 2), "speed": round(speed_c, 2),
+                              "speed_plan": round(float(plan["speed"][j]), 2),
+                              "beta_deg": round(math.degrees(math.atan2(vy_c, s.velocity[0])), 2),
+                              "beta_plan_deg": round(math.degrees(float(plan["beta"][j])), 2),
+                              "r": round(yaw_r, 3), "r_plan": round(float(plan["r"][j]), 3),
+                              "steer_deg": round(math.degrees(cmd.tire_angle), 2),
+                              "steer_plan_deg": round(math.degrees(float(plan["delta"][j])), 2),
+                              "accel": round(a, 2), "x": round(xc, 2), "y": round(yc, 2),
+                              "contacts": contacts_now})
+            if j >= len(plan["s"]) - 2:
+                plan_t1 = t
+                result = "plan done"
+                break
     if law is not None:
         # the lane as Autoware's trajectory: the car's signed distance (+ left) and heading error
         hdg = float(c["heading"][i_near])
@@ -209,6 +293,10 @@ while t < TIME_LIMIT:
         all_contacts.extend(contacts_now)
     t += FRAME
 
+if plan_rows:
+    with open(os.path.join(OUT, "plan_track.jsonl"), "w") as f:
+        for r in plan_rows:
+            f.write(json.dumps(r) + "\n")
 if drift_rows:
     with open(os.path.join(OUT, "drift.jsonl"), "w") as f:
         for r in drift_rows:
@@ -225,5 +313,17 @@ if law is not None:
                     "hold_beta_deg_mean": round(float(np.mean([abs(r["beta_deg"]) for r in hold])), 1)
                     if hold else None,
                     "worst_off_lane_in_drift_m": max((abs(r["off_lane"]) for r in drift_rows), default=0.0)})
+if plan is not None and plan_rows:
+    took = plan_rows[-1]["t"]
+    planned = plan_rows[-1]["t_plan"] - plan_rows[0]["t_plan"]
+    summary.update({"plan": PLAN, "plan_time_s": round(planned, 2), "isaac_time_s": round(took, 2),
+                    "time_ratio": round(took / planned, 3) if planned > 0 else None,
+                    "s_tracked": [plan_rows[0]["s"], plan_rows[-1]["s"]],
+                    "worst_e_lat_m": max(abs(r["e_lat"]) for r in plan_rows),
+                    "rms_e_lat_m": round(float(np.sqrt(np.mean([r["e_lat"] ** 2 for r in plan_rows]))), 3),
+                    "rms_beta_err_deg": round(float(np.sqrt(np.mean(
+                        [(r["beta_deg"] - r["beta_plan_deg"]) ** 2 for r in plan_rows]))), 2),
+                    "gains": [K_LAT, K_YAW, K_SPEED, K_R], "frame_s": FRAME, "drive_share": DRIVE_SHARE,
+                    "slip_cut_deg": [round(math.degrees(a), 1) for a in SLIP_CUT]})
 print("SPIKE-RESULT " + json.dumps(summary), flush=True)
 app.close()
