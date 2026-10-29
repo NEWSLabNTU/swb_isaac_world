@@ -21,11 +21,12 @@ offset from the planned path, the body's yaw from the planned yaw and its yaw ra
 planned one, and its wheel torques as the acceleration request (the ECU's own feedforward turns
 m a + road load back into those torques) with feedback on the speed, never past the plan's
 drive (the rear's grip: more only spins it). The drive and the brakes are eased, as a driver
-lifts or comes off the pedal, while the sideslip is off the plan's: from SLIP_CUT's first angle
+lifts or comes off the pedal, while the sideslip is past the plan's: from SLIP_CUT's first angle
 to none at its second (deg, default "3,10"); DRIVE_SHARE (default 1) of the plan's drive.
 TRACK_GAINS="k_lat,k_yaw,k_speed,k_r" (default 0.15,0.5,1.0,0.3; k_lat at 10 m/s and below,
 falling as 10 / v above); FRAME_MS, the control's frame (default 50; physics at 60 Hz or the
-frame's multiple above it). `<out>/plan_track.jsonl` has every frame; the result compares the
+frame's multiple above it). `<out>/plan_track.jsonl` has every frame (with each wheel's torques
+and tyre: `wheels`, see wheel_rows); the result compares the
 section's time with the plan's.
 
 It answers C9a's questions: the world loads and renders (the recorder's cameras, the course
@@ -176,6 +177,20 @@ if DRIFT:
 
 t, i_near, rows, worst_off, worst_dz = 0.0, i0, [], 0.0, 0.0
 contacts_now, all_contacts = [], []
+
+
+def wheel_rows(v):
+    """Each wheel (fl, fr, rl, rr) after the last step: the ECU's drive and brake torques (N m),
+    PhysX's tyre forces along and across (N), load (N), slip and slip angle."""
+    if v.wheel_states is None or v.torques is None:
+        return None
+    cp = v.contacts or (None,) * len(v.wheel_states)
+    return [[round(d, 1), round(b, 1), round(w.force[0], 1), round(w.force[1], 1),
+             round(c.load, 1) if c is not None and c.on_ground else 0.0,
+             round(w.slip, 4), round(w.slip_angle, 4)]
+            for d, b, w, c in zip(v.torques.drive, v.torques.brake, v.wheel_states, cp)]
+
+
 result = "timeout"
 while t < TIME_LIMIT:
     s = ego.state
@@ -235,8 +250,9 @@ while t < TIME_LIMIT:
             a = a_ff + K_SPEED * (float(plan["speed"][j]) - speed_c)
             if a_ff > 0:   # the plan drives at the rear's grip: more only spins it
                 a = min(a, a_ff)
-            slip_err = abs(math.atan2(vy_c, s.velocity[0]) - float(plan["beta"][j]))
-            # off the plan's sideslip the tyres have no grip to spare: lift, or ease the brakes
+            slip_err = abs(math.atan2(vy_c, s.velocity[0])) - abs(float(plan["beta"][j]))
+            # sliding more than the plan the tyres have no grip to spare: lift, or ease the
+            # brakes (sliding less they have: brake as planned, or the car arrives too fast)
             a *= min(1.0, max(0.0, (SLIP_CUT[1] - slip_err) / (SLIP_CUT[1] - SLIP_CUT[0])))
             cmd.acceleration = a
             cmd.velocity = 60.0 if a > 0 else 0.0
@@ -250,7 +266,7 @@ while t < TIME_LIMIT:
                               "steer_deg": round(math.degrees(cmd.tire_angle), 2),
                               "steer_plan_deg": round(math.degrees(float(plan["delta"][j])), 2),
                               "accel": round(a, 2), "x": round(xc, 2), "y": round(yc, 2),
-                              "contacts": contacts_now})
+                              "contacts": contacts_now, "wheels": wheel_rows(ego.vehicle)})
             if j >= len(plan["s"]) - 2:
                 plan_t1 = t
                 result = "plan done"
