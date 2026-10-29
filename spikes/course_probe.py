@@ -39,6 +39,7 @@ import copy
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 
@@ -75,6 +76,13 @@ HAIRPIN_NEAR = 30.0  # m of the centreline either side of a hairpin's apex
 TIME_LIMIT = 400.0  # s of simulated time
 DRIFT = os.environ.get("DRIFT")
 PLAN = os.environ.get("PLAN")
+LIVE = os.environ.get("LIVE")
+LIVE_FROM = float(os.environ.get("LIVE_FROM", "40"))
+KICK_S = float(os.environ["KICK_S"]) if os.environ.get("KICK_S") else None
+KICK_RATE = math.radians(float(os.environ.get("KICK_RATE", "30")))
+PATCH_S = float(os.environ["PATCH_S"]) if os.environ.get("PATCH_S") else None
+PATCH_MU = float(os.environ.get("PATCH_MU", "0.6"))
+PATCH_LEN = float(os.environ.get("PATCH_LEN", "20"))
 K_LAT, K_YAW, K_SPEED, K_R = (float(g) for g in
                               os.environ.get("TRACK_GAINS", "0.15,0.5,1.0,0.3").split(","))
 SLIP_CUT = tuple(math.radians(float(a)) for a in os.environ.get("SLIP_CUT", "3,10").split(","))
@@ -130,8 +138,26 @@ ego = world.egos[1]
 cmd = copy.copy(ego.ros.cmd)
 
 
+kick = {"due": False, "done": False, "at": None}
+spec_doc = yaml.safe_load(open(os.path.join(REPO, "src/sim_vehicle_spec/vehicles/drift_mustang.yaml")))
+L_BOX, W_BOX, _ = spec_doc["inertia"]["inertia_box"]
+IZ = spec_doc["inertia"]["mass"] / 12.0 * (L_BOX ** 2 + W_BOX ** 2)
+KICK_ARM = 1.5   # m either side of the body's origin along its axis
+
+
 def before_substep(dt, e=ego, cm=cmd):
     e.vehicle.apply(cm, dt, e.state)
+    if kick["due"] and not kick["done"]:
+        # a couple of +-F across the body at +-KICK_ARM along it: torque 2 F KICK_ARM for dt
+        f = IZ * KICK_RATE / (2.0 * KICK_ARM * dt)
+        px, py, pz = e.state.position
+        yw = yaw_of(e.state.quat)
+        ax, ay = math.cos(yw), math.sin(yw)
+        nx, ny = -ay, ax
+        for sgn in (1.0, -1.0):
+            world._apply_force(e.vehicle.path, (sgn * f * nx, sgn * f * ny, 0.0),
+                               (px + sgn * KICK_ARM * ax, py + sgn * KICK_ARM * ay, pz))
+        kick["done"] = True
 
 
 ego.before_substep = before_substep
@@ -153,6 +179,31 @@ if PLAN:
     lane = np.stack([c["x"], c["y"]], axis=1)   # the run-up on the centreline, as the plan
     log.info("plan %s: s %.0f-%.0f, %.2f s", PLAN, plan["s"][0], plan["s"][-1], float(plan["time"]))
 plan_rows, plan_j, plan_t0, plan_t1 = [], 0, None, None
+
+live, live_rows, live_t0, live_s0, live_done = None, [], None, None, None
+if LIVE:
+    ad = os.environ.get("AUTOWARE_DRIFT", os.path.expanduser("~/repos/autoware-drift"))
+    rp = os.path.join(ad, "src/planning/race_planner")
+    py = os.environ.get("RACE_PLANNER_PY", os.path.join(rp, ".venv/bin/python"))
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "LD_PRELOAD")}
+    env["SWB"] = REPO
+    live = subprocess.Popen([py, "-m", "race_planner.serve"], cwd=rp, env=env, text=True,
+                            stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+    spec_path = os.path.join(REPO, "src/sim_vehicle_spec/vehicles/drift_mustang.yaml")
+    live.stdin.write(json.dumps({"init": {
+        "map_dir": MAP, "spec": spec_path,
+        "classes": os.path.join(REPO, "src/swb_isaac_world/config/surface_classes.yaml"),
+        "l0": os.environ.get("LIVE_L0"), "grip": float(os.environ.get("LIVE_GRIP", "0.92")),
+        "budget": float(os.environ.get("LIVE_BUDGET", "1.0"))}}) + "\n")
+    live.stdin.flush()
+    hello = json.loads(live.stdout.readline())
+    spec = yaml.safe_load(open(spec_path))
+    LR = WB * spec["inertia"]["com_front_fraction"]       # base_link (rear axle) to the CoM
+    STEER_MAX = spec["geometry"]["max_steer_angle"]
+    lane = np.stack([c["x"], c["y"]], axis=1)   # the run-up on the centreline, as the planner
+    S_END = float(os.environ.get("S_END", c["s"][-1] - 10.0))
+    log.info("live planner ready (track from s %.1f), driving from s %.0f to %.0f",
+             hello["s0"], S_START + LIVE_FROM, S_END)
 
 law, drift_s, drift_rows = None, None, []
 if DRIFT:
@@ -224,6 +275,15 @@ while t < TIME_LIMIT:
     if t > 10.0 and off > (12.0 if law is not None and law.phase is not dl.Phase.CRUISE else 6.0):
         result = "off the lane"
         break
+    if KICK_S is not None and not kick["due"] and s_now >= KICK_S:
+        kick["due"], kick["at"] = True, round(t, 3)
+        log.info("yaw kick %.0f deg/s at s %.1f", math.degrees(KICK_RATE), s_now)
+    if PATCH_S is not None:
+        in_patch = PATCH_S <= s_now < PATCH_S + PATCH_LEN
+        if in_patch != getattr(world, "_probe_patch", False):
+            world.set_road_condition(PATCH_MU if in_patch else 1.0, "dry", None)
+            world._probe_patch = in_patch
+            log.info("friction x%.2f from s %.1f", PATCH_MU if in_patch else 1.0, s_now)
     near_hp = len(apex) and np.min(np.abs(apex - s_now)) < HAIRPIN_NEAR
     target = HAIRPIN_SPEED if near_hp else SPEED
     if law is not None and drift_s - 120.0 < s_now < drift_s + 5.0:
@@ -285,6 +345,43 @@ while t < TIME_LIMIT:
                 plan_t1 = t
                 result = "plan done"
                 break
+    if live is not None and (live_t0 is not None or (s_now >= S_START + LIVE_FROM
+                                                     and v >= SPEED - 0.5)):
+        if live_t0 is None:
+            live_t0, live_s0 = t, s_now
+        yaw_r = float(s.angular_velocity[2])
+        xc, yc = x + LR * math.cos(yaw), y + LR * math.sin(yaw)
+        st = {"t": round(t - live_t0, 4), "x": xc, "y": yc, "yaw": yaw, "vx": float(s.velocity[0]),
+              "vy": float(s.velocity[1]) + yaw_r * LR, "r": yaw_r,
+              "delta": float(ego.vehicle.tire_angle)}
+        live.stdin.write(json.dumps({"state": st}) + "\n")
+        live.stdin.flush()
+        ans = live.stdout.readline()
+        if not ans:
+            result = "planner died"
+            break
+        ans = json.loads(ans)
+        cmd.tire_angle = max(-STEER_MAX, min(STEER_MAX, float(ans["tire_angle"])))
+        cmd.acceleration = float(ans["accel"])
+        cmd.velocity = 60.0 if cmd.acceleration > 0 else 0.0
+        live_rows.append({"t": st["t"], "s": round(ans["s"], 2), "n": round(ans["n"], 3),
+                          "n_plan": ans["n_plan"], "xi_deg": round(math.degrees(ans["xi"]), 2),
+                          "v": round(math.hypot(st["vx"], st["vy"]), 2), "v_plan": ans["v_plan"],
+                          "beta_deg": round(math.degrees(math.atan2(st["vy"], max(st["vx"], 0.5))), 2),
+                          "beta_plan_deg": ans["beta_plan_deg"], "r": round(yaw_r, 3),
+                          "accel": round(cmd.acceleration, 2),
+                          "steer_deg": round(math.degrees(cmd.tire_angle), 2),
+                          "delta_deg": round(math.degrees(st["delta"]), 2),
+                          "ok": ans["ok"], "fallback": ans["fallback"], "replan": ans["replan"],
+                          "solve_s": round(ans["solve_s"], 3), "x": round(xc, 2), "y": round(yc, 2),
+                          "contacts": contacts_now, "wheels": wheel_rows(ego.vehicle)})
+        live_rows[-1]["stop"] = ans.get("stop")
+        if ans.get("stop") and live_rows[-1]["v"] < 0.5:
+            result = "stopped: " + ans["stop"]
+            break
+        if abs(live_rows[-1]["beta_deg"]) > 80:
+            result = "spun"
+            break
     if law is not None:
         # the lane as Autoware's trajectory: the car's signed distance (+ left) and heading error
         hdg = float(c["heading"][i_near])
@@ -327,6 +424,18 @@ if plan_rows:
     with open(os.path.join(OUT, "plan_track.jsonl"), "w") as f:
         for r in plan_rows:
             f.write(json.dumps(r) + "\n")
+if live_rows:
+    with open(os.path.join(OUT, "live.jsonl"), "w") as f:
+        for r in live_rows:
+            f.write(json.dumps(r) + "\n")
+if live is not None:
+    try:
+        live.stdin.write(json.dumps({"stop": True}) + "\n")
+        live.stdin.flush()
+        live_done = json.loads(live.stdout.readline())
+    except (BrokenPipeError, ValueError):
+        pass
+    live.wait(timeout=30)
 if drift_rows:
     with open(os.path.join(OUT, "drift.jsonl"), "w") as f:
         for r in drift_rows:
@@ -355,5 +464,14 @@ if plan is not None and plan_rows:
                         [(r["beta_deg"] - r["beta_plan_deg"]) ** 2 for r in plan_rows]))), 2),
                     "gains": [K_LAT, K_YAW, K_SPEED, K_R], "frame_s": FRAME, "drive_share": DRIVE_SHARE,
                     "slip_cut_deg": [round(math.degrees(a), 1) for a in SLIP_CUT]})
+if KICK_S is not None or PATCH_S is not None:
+    summary.update({"kick_s": KICK_S, "kick_t": kick["at"], "patch_s": PATCH_S, "patch_mu": PATCH_MU})
+if live_rows:
+    summary.update({"live": True, "live_s": [round(live_s0, 1), live_rows[-1]["s"]],
+                    "live_time_s": live_rows[-1]["t"], "planner": live_done,
+                    "worst_n_err_m": max(abs(r["n"] - r["n_plan"]) for r in live_rows),
+                    "v_max_kmh": round(3.6 * max(r["v"] for r in live_rows), 1),
+                    "fallback_frames": sum(r["fallback"] for r in live_rows),
+                    "replans_off_plan": sum(r["replan"] == "off_plan" for r in live_rows)})
 print("SPIKE-RESULT " + json.dumps(summary), flush=True)
 app.close()
