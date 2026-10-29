@@ -13,6 +13,8 @@ from their first corner to their third, as the renderer splits them, so a point 
 surface the lidar's ray hits and not on a bilinear patch near it. Within `NEAR` m of the road
 the sampling is `STEP_NEAR`, beyond it `STEP_FAR`; the road at `STEP_NEAR`. Written as a binary
 PCD of x, y, z (float32), as Autoware's map loader reads, thinned to one point per `VOXEL`.
+
+A closed course's lanelets close: the last stretch ends on the first one's first points.
 """
 import os
 
@@ -33,14 +35,16 @@ def _sample_points(c, step):
 
 def lanelets(c, course, frame, out, speed_limit_kmh):
     """Write the Lanelet2 map; returns the lanelets' ids along the section and back."""
-    from .geometry import _normals
+    from .geometry import _normals, is_closed
 
     r = course["road"]
     edge = r["lanes"] * r["lane_width"] / 2
     x, y, z = c["x"], c["y"], c["z"]
-    nrm = _normals(x, y)
+    closed = is_closed(c)
+    nrm = _normals(x, y, closed)
     idx = _sample_points(c, 2.0)  # a bound point every 2 m
-    idx = np.unique(np.concatenate([idx, [len(x) - 1]]))
+    if not closed:
+        idx = np.unique(np.concatenate([idx, [len(x) - 1]]))
     node_id = [0]
     nodes, ways, rels = [], [], []
 
@@ -53,8 +57,13 @@ def lanelets(c, course, frame, out, speed_limit_kmh):
     lines = {}
     for name, off in (("left", edge), ("centre", 0.0), ("right", -edge)):
         lines[name] = [node(x[i] + off * nrm[i, 0], y[i] + off * nrm[i, 1], z[i]) for i in idx]
+        if closed:  # back to the first point
+            lines[name].append(lines[name][0])
     # stretches of CHUNK m, sharing their end points
     s = c["s"][idx]
+    if closed:
+        idx = np.append(idx, len(x))  # the first point again, a lap on
+        s = np.append(s, c["s"][-1] + (c["s"][1] - c["s"][0]))
     cuts = [0]
     for k in range(1, len(idx)):
         if s[k] - s[cuts[-1]] >= CHUNK and len(idx) - k > 10:

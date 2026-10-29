@@ -7,6 +7,9 @@ the road asphalt, its lines asphalt, the terrain grass (the world's labels; no z
 A drift point per hairpin at the start of its arc, where the curvature first passes half its
 apex's, with the hairpin's radius (signed: > 0 left) and turn: drift_controller's `points:`
 entries.
+
+A closed course's run is `<name>_lap.xosc`: a lap, less START + END, from START m past the
+loop's first point.
 """
 import math
 import os
@@ -18,7 +21,7 @@ TIMEOUT = 600             # s, simulated
 
 XOSC = """<?xml version="1.0"?>
 <OpenSCENARIO>
-\t<FileHeader author="swb_isaac_world.course" date="2026-10-29T00:00:00+00:00" description="{title}: down the section in drift_mustang, Autoware driving (scenario-world-bridge roadmap 058)" revMajor="1" revMinor="2" />
+\t<FileHeader author="swb_isaac_world.course" date="2026-10-29T00:00:00+00:00" description="{title}: {run_desc} in drift_mustang, Autoware driving (scenario-world-bridge roadmap 058)" revMajor="1" revMinor="2" />
 \t<ParameterDeclarations />
 \t<CatalogLocations><VehicleCatalog><Directory path="$(find-pkg-share sim_vehicle_spec)/catalogs" /></VehicleCatalog></CatalogLocations>
 \t<RoadNetwork>
@@ -67,7 +70,7 @@ XOSC = """<?xml version="1.0"?>
 \t\t\t\t</Private>
 \t\t\t</Actions>
 \t\t</Init>
-\t\t<Story name="{name}_down">
+\t\t<Story name="{name}_{run}">
 \t\t\t<Act name="drive_act">
 \t\t\t\t<ManeuverGroup maximumExecutionCount="1" name="ego_maneuvers">
 \t\t\t\t\t<Actors selectTriggeringEntities="false">
@@ -170,9 +173,12 @@ def build(c, hairpins, course, map_dir):
     x1, y1, z1, h1 = _lane_point(c, s_end - END, lane_off)
     os.makedirs(os.path.join(map_dir, "scenarios"), exist_ok=True)
     name = course["name"]
-    path = os.path.join(map_dir, "scenarios", f"{name}_down.xosc")
+    closed = bool(r.get("closed", False))
+    run, run_desc = ("lap", "a lap") if closed else ("down", "down the section")
+    path = os.path.join(map_dir, "scenarios", f"{name}_{run}.xosc")
     with open(path, "w") as f:
-        f.write(XOSC.format(title=name, map_dir=os.path.realpath(map_dir), name=name,
+        f.write(XOSC.format(title=name, map_dir=os.path.realpath(map_dir), name=name, run=run,
+                            run_desc=run_desc,
                             x0=x0, y0=y0, z0=z0 + 0.3, h0=h0, x1=x1, y1=y1, z1=z1, h1=h1,
                             timeout=TIMEOUT))
     with open(os.path.join(map_dir, "surfaces.yaml"), "w") as f:

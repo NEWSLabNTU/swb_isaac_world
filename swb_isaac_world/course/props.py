@@ -38,11 +38,11 @@ def _terrain_z(m):
 
 def guardrails(c, m, half, seg_len):
     """(x, y, z, yaw, length) of each segment, from its start, both sides."""
-    from .geometry import _normals
+    from .geometry import _normals, is_closed
 
     tz = _terrain_z(m)
     x, y, z, k = c["x"], c["y"], c["z"], c["curvature"]
-    nrm = _normals(x, y)
+    nrm = _normals(x, y, is_closed(c))
     step = int(round(seg_len / 0.5))
     out = []
     for side in (1, -1):

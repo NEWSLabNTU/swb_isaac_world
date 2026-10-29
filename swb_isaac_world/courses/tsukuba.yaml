@@ -1,0 +1,34 @@
+# Tsukuba Circuit (筑波サーキット), Shimotsuma, Ibaraki: コース2000, the 2.045 km main course, run
+# clockwise (roadmap 060 M7). Data: OpenStreetMap (ODbL, OpenStreetMap contributors); GSI 基盤地図情報
+# 数値標高モデル 5 m and シームレス空中写真 (出典：国土地理院).
+name: tsukuba
+# The map frame's origin: a local transverse Mercator here, z the elevation above origin.alt.
+origin: {lat: 36.150, lon: 139.922, alt: 20.0}
+road:
+  # the course's loop, one closed one-way way. By id, not by tag: コース2000's other ways (the pit
+  # lane, its exit and a bypass of the Dunlop chicane) would make a shorter loop than the course.
+  overpass: way(id:110390474)
+  box: [36.14, 139.90, 36.16, 139.935]  # south, west, north, east
+  # a circuit: the loop through the road point nearest `from` (mid main straight), in the way's
+  # direction (clockwise)
+  closed: true
+  from: [36.1505, 139.9196]
+  # 15 m of asphalt, edge to edge, as the course is wide
+  lanes: 2
+  lane_width: 6.0
+  shoulder: 1.5
+# Terrain and photo: the course's box plus this margin, m
+margin: 300.0
+dem: {layer: dem5a, zoom: 15}
+photo: {layer: seamlessphoto, zoom: 18}
+# no limit on a circuit; the lanelets' speed_limit, high enough not to bind
+speed_limit_kmh: 200
+# C5's props, from the CARLA 0.9.16 Isaac set ($CARLA_USD): a guardrail outside the corners
+# tighter than 30 m (the ground is flat, so no drops), and trees where the photo is forest
+props:
+  guardrail: Town01/Props/SM_Guardrail_02.usd
+  trees: [Town01/Props/SM_TreePine_1.usd, Town01/Props/SM_TreePine_2.usd,
+          Town01/Props/SM_TreePine_3.usd, Town01/Props/SM_Beech.usd,
+          Town02/Props/SM_Japanese_Maple_01.usd]
+  tree_spacing: 7.0     # m between trees in the forest
+  tree_band: 90.0       # m from the road they stand in

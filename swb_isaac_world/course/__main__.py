@@ -21,8 +21,8 @@ def section_box(course, frame, pts=None):
     """(south, west, north, east) of the section plus the course's margin."""
     road = course["road"]
     m = course["margin"]
-    if pts is None:
-        pts = [frame.xy(*road["from"]), frame.xy(*road["to"])]
+    if pts is None:  # a closed course has only its start
+        pts = [frame.xy(*road["from"]), frame.xy(*road.get("to", road["from"]))]
     xs, ys = [p[0] for p in pts], [p[1] for p in pts]
     s, w = frame.latlon(min(xs) - m, min(ys) - m)
     n, e = frame.latlon(max(xs) + m, max(ys) + m)
@@ -41,7 +41,8 @@ def plot(c, photo, block, z, frame, out):
         return ((tx - x0) * 256, (ty - y0) * 256)
 
     d = ImageDraw.Draw(img)
-    d.line([px(x, y) for x, y in zip(c["x"], c["y"])], fill=(255, 40, 40), width=3)
+    line = [px(x, y) for x, y in zip(c["x"], c["y"])]
+    d.line(line + line[:1] if "closed" in c else line, fill=(255, 40, 40), width=3)
     font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", 28)
     for i, h in enumerate(c["hairpins"]):
         u, v = px(h["x"], h["y"])
@@ -130,13 +131,17 @@ def main(argv=None):
     photo_block = data.tiles(raw, course["photo"]["layer"], pz, "jpg", *box)
     dem_block = data.tiles(raw, course["dem"]["layer"], dz, "txt", *box)
     np.savez(os.path.join(work, "centreline.npz"), **{k: v for k, v in c.items() if k != "hairpins"})
+    closed = "closed" in c
+    lap = float(c["s"][-1] + (c["s"][1] - c["s"][0])) if closed else float(c["s"][-1])
     summary = {
-        "length_m": round(float(c["s"][-1]), 1),
+        "length_m": round(lap, 1),
         "z_from_m": round(float(c["z"][0] + frame.alt0), 1), "z_to_m": round(float(c["z"][-1] + frame.alt0), 1),
         "max_grade_pct": round(float(np.abs(c["grade"]).max() * 100), 1),
         "min_radius_m": round(float(1.0 / np.abs(c["curvature"]).max()), 1),
         "hairpins": c["hairpins"], "box": [round(v, 6) for v in box],
         "dem_block": dem_block, "photo_block": photo_block}
+    if closed:
+        summary["closed"] = True
     json.dump(summary, open(os.path.join(work, "centreline.json"), "w"), indent=1)
     photo = data.mosaic(raw, course["photo"]["layer"], pz, photo_block, os.path.join(work, "photo.jpg"))
     plot(c, photo, photo_block, pz, frame, os.path.join(work, "centreline.jpg"))

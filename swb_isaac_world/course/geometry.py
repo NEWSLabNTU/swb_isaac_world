@@ -9,7 +9,8 @@ road's scar and the buildings show where they are.
 
 The road is a ribbon along the centreline at the lanes' and shoulders' width, its lines (the
 centre line, yellow, and the two edge lines, white) thin ribbons just above it. Each mesh is
-a list of quads.
+a list of quads. A closed course's ribbons close: their last quads join the last point to the
+first.
 """
 import numpy as np
 
@@ -21,8 +22,16 @@ LINE_HALF = 0.075    # m, half a painted line's width
 LINE_LIFT = 0.006    # m, the lines above the road
 
 
-def _normals(x, y):
-    d = np.stack([np.gradient(x), np.gradient(y)], axis=1)
+def is_closed(c):
+    """Whether a centreline (centreline.build's dict or its npz) is a closed course's."""
+    return "closed" in getattr(c, "files", c) and bool(c["closed"])
+
+
+def _normals(x, y, closed=False):
+    if closed:  # central differences around the loop
+        d = np.stack([np.roll(x, -1) - np.roll(x, 1), np.roll(y, -1) - np.roll(y, 1)], axis=1)
+    else:
+        d = np.stack([np.gradient(x), np.gradient(y)], axis=1)
     d /= np.linalg.norm(d, axis=1, keepdims=True)
     return np.stack([-d[:, 1], d[:, 0]], axis=1)  # to the left of travel
 
@@ -30,21 +39,23 @@ def _normals(x, y):
 def ribbon(c, left, right, lift=0.0, strip=None):
     """Quads between offsets `left` and `right` (m, left of the centreline positive) along it,
     in strips across of at most `strip` m (None: one): points (k+1 rows of n, 3), faces
-    ((n-1) k, 4), row by row from `left`.
+    ((n-1) k, 4; n k closed), row by row from `left`.
 
     A section is level across, so on a bend that climbs each quad is twisted, and the two
     triangles a collider makes of it meet at an angle that grows with its width: 3.4 deg one
     8 m quad across Haruna's hairpins, a fold every half metre that a wheel's raycast feels
     (swb docs/issues/024); 0.6 deg in 0.5 m strips."""
     x, y, z = c["x"], c["y"], c["z"]
-    nrm = _normals(x, y)
+    closed = is_closed(c)
+    nrm = _normals(x, y, closed)
     k = 1 if strip is None else max(1, int(np.ceil(abs(left - right) / strip)))
     rows = [np.stack([x + o * nrm[:, 0], y + o * nrm[:, 1], z + lift], axis=1)
             for o in np.linspace(left, right, k + 1)]
     pts = np.concatenate(rows)
     n = len(x)
-    i = np.arange(n - 1)
-    faces = np.concatenate([np.stack([r * n + i, r * n + i + 1, (r + 1) * n + i + 1,
+    i = np.arange(n if closed else n - 1)
+    i1 = (i + 1) % n
+    faces = np.concatenate([np.stack([r * n + i, r * n + i1, (r + 1) * n + i1,
                                       (r + 1) * n + i], axis=1)  # one winding; usd._face_up turns it up
                             for r in range(k)])
     return pts, faces
