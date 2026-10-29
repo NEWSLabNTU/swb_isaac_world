@@ -97,7 +97,14 @@ world_cfg = yaml.safe_load(open(os.path.join(MAP, "isaac/world.yaml")))
 course_yaml = yaml.safe_load(open(os.path.join(REPO, "src/swb_isaac_world/swb_isaac_world/courses",
                                                os.path.basename(MAP) + ".yaml")))
 LANE_OFF = course_yaml["road"]["lane_width"] / 2  # the left lane's middle, as the scenario
+# off the lane: past the road's far edge from the lane's middle, with a car's width to spare
+# (6 m on Haruna's 2 x 3.25 m road with 0.75 m shoulders, as before; Tsukuba's 15 m needs more)
+_rd = course_yaml["road"]
+OFF_LANE = max(6.0, _rd["lanes"] * _rd["lane_width"] / 2 + _rd.get("shoulder", 0.0) + 1.0)
 c = np.load(os.path.join(MAP, "course/centreline.npz"))
+CLOSED = "closed" in c.files and bool(c["closed"])          # a circuit (058's loops)
+LAP = float(c["s"][-1] + (c["s"][1] - c["s"][0])) if CLOSED else 0.0
+laps = 0
 hairpins = json.load(open(os.path.join(MAP, "course/centreline.json")))["hairpins"]
 STEP = float(c["s"][1] - c["s"][0])
 lane = np.stack([c["x"] - LANE_OFF * np.sin(c["heading"]),
@@ -201,7 +208,8 @@ if LIVE:
     LR = WB * spec["inertia"]["com_front_fraction"]       # base_link (rear axle) to the CoM
     STEER_MAX = spec["geometry"]["max_steer_angle"]
     lane = np.stack([c["x"], c["y"]], axis=1)   # the run-up on the centreline, as the planner
-    S_END = float(os.environ.get("S_END", c["s"][-1] - 10.0))
+    S_END = float(os.environ.get("S_END", S_START + LIVE_FROM + int(os.environ.get("LAPS", "2")) * LAP
+                                 if CLOSED else c["s"][-1] - 10.0))
     log.info("live planner ready (track from s %.1f), driving from s %.0f to %.0f",
              hello["s0"], S_START + LIVE_FROM, S_END)
 
@@ -263,16 +271,23 @@ while t < TIME_LIMIT:
     x, y, z = s.position
     yaw = yaw_of(s.quat)
     # the nearest lane point, searched forward from the last one
-    lo, hi = max(0, i_near - 20), min(len(lane), i_near + 200)
-    d = np.hypot(lane[lo:hi, 0] - x, lane[lo:hi, 1] - y)
-    i_near = lo + int(np.argmin(d))
+    if CLOSED:   # a circuit: the search wraps at the seam, and s counts the laps on
+        idx = (i_near + np.arange(-20, 200)) % len(lane)
+        d = np.hypot(lane[idx, 0] - x, lane[idx, 1] - y)
+        i_new = int(idx[int(np.argmin(d))])
+        laps += 1 if i_new < i_near - len(lane) // 2 else 0
+        i_near = i_new
+    else:
+        lo, hi = max(0, i_near - 20), min(len(lane), i_near + 200)
+        d = np.hypot(lane[lo:hi, 0] - x, lane[lo:hi, 1] - y)
+        i_near = lo + int(np.argmin(d))
     off, dz = float(d.min()), float(z - c["z"][i_near])
     worst_off, worst_dz = max(worst_off, off), max(worst_dz, abs(dz))
-    s_now = float(c["s"][i_near])
+    s_now = float(c["s"][i_near]) + laps * LAP
     if s_now >= S_END:
         result = "reached"
         break
-    if t > 10.0 and off > (12.0 if law is not None and law.phase is not dl.Phase.CRUISE else 6.0):
+    if t > 10.0 and off > (12.0 if law is not None and law.phase is not dl.Phase.CRUISE else OFF_LANE):
         result = "off the lane"
         break
     if KICK_S is not None and not kick["due"] and s_now >= KICK_S:
@@ -353,7 +368,9 @@ while t < TIME_LIMIT:
         xc, yc = x + LR * math.cos(yaw), y + LR * math.sin(yaw)
         st = {"t": round(t - live_t0, 4), "x": xc, "y": yc, "yaw": yaw, "vx": float(s.velocity[0]),
               "vy": float(s.velocity[1]) + yaw_r * LR, "r": yaw_r,
-              "delta": float(ego.vehicle.tire_angle)}
+              "delta": float(ego.vehicle.tire_angle),
+              # the car's own friction estimate (its brake module's, at the limit), relative
+              "mu_ratio": float(ego.vehicle.ecu.estimator.friction / ego.vehicle.ecu.c.tire_friction)}
         live.stdin.write(json.dumps({"state": st}) + "\n")
         live.stdin.flush()
         ans = live.stdout.readline()
