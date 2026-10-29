@@ -92,7 +92,7 @@ def preview(meshes, photo, out):
     x0, x1, y0, y1 = m["box"]
     P = lambda x, y: ((x - x0) / 2.0, (y1 - y) / 2.0)
     rp, rf = m["road_points"], m["road_faces"]
-    for f in rf[::2]:
+    for f in rf:
         d.polygon([P(*rp[k][:2]) for k in f], fill=(70, 70, 75))
     lp = m["line_centre_points"]
     n = len(lp) // 2

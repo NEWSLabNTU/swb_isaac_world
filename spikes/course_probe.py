@@ -181,14 +181,28 @@ contacts_now, all_contacts = [], []
 
 def wheel_rows(v):
     """Each wheel (fl, fr, rl, rr) after the last step: the ECU's drive and brake torques (N m),
-    PhysX's tyre forces along and across (N), load (N), slip and slip angle."""
+    PhysX's tyre forces along and across (N), load (N), slip and slip angle, the suspension's
+    jounce (m), the ground plane under the wheel (nx, ny, nz, d) and the ground shape's name."""
     if v.wheel_states is None or v.torques is None:
         return None
+    from omni.physx import get_physx_interface
+    from omni.physx.bindings._physx import (VEHICLE_WHEEL_STATE_GROUND_PLANE,
+                                            VEHICLE_WHEEL_STATE_GROUND_SHAPE,
+                                            VEHICLE_WHEEL_STATE_SUSPENSION_JOUNCE)
+    physx = get_physx_interface()
     cp = v.contacts or (None,) * len(v.wheel_states)
-    return [[round(d, 1), round(b, 1), round(w.force[0], 1), round(w.force[1], 1),
-             round(c.load, 1) if c is not None and c.on_ground else 0.0,
-             round(w.slip, 4), round(w.slip_angle, 4)]
-            for d, b, w, c in zip(v.torques.drive, v.torques.brake, v.wheel_states, cp)]
+    rows = []
+    for d, b, w, c, wp in zip(v.torques.drive, v.torques.brake, v.wheel_states, cp,
+                              v.wheel_paths):
+        ws = physx.get_wheel_state(wp) or {}
+        plane = ws.get(VEHICLE_WHEEL_STATE_GROUND_PLANE) or (0.0, 0.0, 0.0, 0.0)
+        rows.append([round(d, 1), round(b, 1), round(w.force[0], 1), round(w.force[1], 1),
+                     round(c.load, 1) if c is not None and c.on_ground else 0.0,
+                     round(w.slip, 4), round(w.slip_angle, 4),
+                     round(float(ws.get(VEHICLE_WHEEL_STATE_SUSPENSION_JOUNCE, -1.0)), 4),
+                     [round(float(x), 4) for x in plane],
+                     str(ws.get(VEHICLE_WHEEL_STATE_GROUND_SHAPE, "")).split("/")[-1]])
+    return rows
 
 
 result = "timeout"
