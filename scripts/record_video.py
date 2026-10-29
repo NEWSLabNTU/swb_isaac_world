@@ -7,8 +7,10 @@ estimated (speed, friction, each wheel's slip) and did (ABS, TC), and each wheel
     scripts/record_video.py <record dir>/<time>-<ego> [out.mp4] [--from T] [--to T] [--title S]
         [--right track|chase|wheel]
 
-Frames are the world server's (20 a second of simulated time), so the video runs at the
-scenario's own speed whatever the run's real-time factor was. System Python with Pillow and
+Frames are the world server's, one per tick of simulated time. The frame rate is read from
+state.jsonl (the median step of "t", rounded to a whole number: 20 for a 50 ms tick, 50 for
+a 20 ms one), so the video runs at the scenario's own speed whatever the tick or the run's
+real-time factor was. --from and --to are times, not frame numbers. System Python with Pillow and
 numpy; ffmpeg on PATH.
 """
 import argparse
@@ -21,7 +23,6 @@ from PIL import Image, ImageDraw, ImageFont
 
 W, H = 960, 540
 STRIP = 260
-FPS = 20
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
 WHEELS = ("front left", "front right", "rear left", "rear right")
@@ -62,6 +63,10 @@ def main():
                          "wheel camera")
     a = ap.parse_args()
     rows = [json.loads(line) for line in open(os.path.join(a.run, "state.jsonl"))]
+    # The frame rate is the run's own: the median step of t over the whole run (before the
+    # window cuts it), rounded to a whole number of frames a second.
+    steps = np.diff([r["t"] for r in rows])
+    fps = int(round(1.0 / float(np.median(steps)))) if len(steps) and np.median(steps) > 0 else 20
     rows = [r for r in rows if (a.t_from is None or r["t"] >= a.t_from)
             and (a.t_to is None or r["t"] <= a.t_to)
             and os.path.exists(os.path.join(a.run, "dash", f"{r['frame']:06d}.jpg"))]
@@ -78,7 +83,7 @@ def main():
     sink = [max((w.get("sinkage_cm") or 0.0) for w in r["wheels"]) for r in rows]
     resist = [sum((w.get("resistance_n") or 0) for w in r["wheels"]) for r in rows]
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
-                           "-pix_fmt", "rgb24", "-s", f"{2 * W}x{H + STRIP}", "-r", str(FPS),
+                           "-pix_fmt", "rgb24", "-s", f"{2 * W}x{H + STRIP}", "-r", str(fps),
                            "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
                            "-movflags", "+faststart", out], stdin=subprocess.PIPE)
     for k, r in enumerate(rows):
