@@ -213,6 +213,7 @@ class IsaacWorld(WorldBase):
         self.by_path = {}  # rigid body path -> handle
         self.reporters = set()  # handles whose contacts are reported (the ego)
         self.egos = {}  # handle -> Ego (038)
+        self.projector = None  # the ego's GNSS projector, the loaded map's (load)
         self.physx = omni.physx.get_physx_interface()
         self.sim = omni.physx.get_physx_simulation_interface()
         if self.ego_config is not None:
@@ -231,8 +232,24 @@ class IsaacWorld(WorldBase):
         self._reset_sky()
         self.latitude = scenario_sky.map_latitude(request.map_dir) \
             if request is not None and request.map_dir else 0.0
+        self.projector = self._projector(request)
         self._load_env(usd, ground_paths)
         self._load_signals(list(signals))
+
+    @staticmethod
+    def _projector(request):
+        """The ego's GNSS projector (aib.frames.Projector): the map's (`map_dir`'s
+        map_projector_info.yaml, MGRS or none) about `map_origin`, so Autoware's GNSS
+        initialization finds the ego on the map; none (TransverseMercator at (0, 0), CARLA's
+        towns) without a map dir."""
+        if request is None or not request.map_dir:
+            return None
+        from aib.frames import Projector
+
+        o = request.map_origin
+        p = Projector.from_map(request.map_dir, (o.x, o.y, o.z))
+        log.info("ego GNSS: %s about map origin (%.1f, %.1f, %.1f)", p.name, o.x, o.y, o.z)
+        return p
 
     def _load_env(self, usd, ground_paths):
         usd = os.path.realpath(usd) if usd else usd
@@ -644,7 +661,8 @@ class IsaacWorld(WorldBase):
 
             # The scenario's declared box is the ego's chassis collider, as for any entity.
             ego = Ego(self.ego_rig, self.ego_ros, self.stage, path, pose, name=name,
-                      box_center=center, box_dims=dims)
+                      box_center=center, box_dims=dims,
+                      projector=self.projector)
             # The ego is the rig's car (the Tesla Model 3 of aib's spec), the one its physics,
             # vehicle description and sensor kit are of, as the CARLA backend spawns it,
             # whatever body the scenario names.
