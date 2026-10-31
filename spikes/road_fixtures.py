@@ -23,6 +23,13 @@ Variants (environment): ROAD_QUERY=raycast|sweep (default raycast, today's), ROA
 (`limitSuspensionExpansionVelocity`), ROAD_RATE=<PhysX Hz> (default 60; the frame stays 50 ms),
 ROAD_VSUB=<vehicle substeps per PhysX step> (default the rig's), ROAD_TRAVEL=<m> (suspension
 travel, default the rig's), ROAD_ONLY=<case,...>.
+
+ROAD_TIRE=ours (066 R5): PhysX's query sees only the base road (`fixture_course.BASE`: every
+lane flat but the kicker), and `swb_isaac_world.road_contact` gives each wheel its contact with
+the true profile every PhysX step: its force on the body (`apply_force_at_pos`, for the next
+step) and the tire's load as each wheel's friction. Each row then also has the model's
+per-wheel load (`tl`), its inner-step peak (`tlmax`) and PhysX's own (`pl`). The rock lane is
+R4's and is skipped.
 """
 import dataclasses
 import json
@@ -43,12 +50,14 @@ import omni.physx  # noqa: E402
 import omni.physx.bindings._physx as pxb  # noqa: E402
 import omni.usd  # noqa: E402
 from isaacsim.core.api import World  # noqa: E402
-from pxr import Gf, PhysxSchema, UsdGeom, UsdPhysics  # noqa: E402
+from pxr import Gf, PhysxSchema, PhysicsSchemaTools, UsdGeom, UsdPhysics  # noqa: E402
 
 import fixture_course as fc  # noqa: E402
 from aib.control import GEAR_DRIVE, Command, State  # noqa: E402
-from aib.isaac.vehicle import Vehicle, ensure_vehicle_scene  # noqa: E402
+from aib.isaac.vehicle import WHEELS, Vehicle, ensure_vehicle_scene  # noqa: E402
 from aib.rig import EgoConfig  # noqa: E402
+from aib.frames import qrot  # noqa: E402
+from swb_isaac_world import road_contact as rc  # noqa: E402
 
 REPO = os.path.abspath(os.path.join(HERE, "../../.."))
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
@@ -57,6 +66,7 @@ QUERY = os.environ.get("ROAD_QUERY", "raycast")
 LIMIT = os.environ.get("ROAD_LIMIT", "0") == "1"
 RATE = float(os.environ.get("ROAD_RATE", "60"))
 ONLY = [c for c in os.environ.get("ROAD_ONLY", "").split(",") if c]
+OURS = os.environ.get("ROAD_TIRE", "physx") == "ours"
 FRAME = 0.05
 SUB = max(1, round(FRAME * RATE))
 DT = FRAME / SUB
@@ -72,7 +82,7 @@ UsdGeom.SetStageUpAxis(stage, UsdGeom.Tokens.z)
 
 def lane_mesh(name):
     y0 = fc.LANES[name][0]
-    xs, ys, hz = fc.lane_grid(name)
+    xs, ys, hz = fc.lane_grid(name, base=OURS)
     nx, ny = len(xs), len(ys)
     pts = [Gf.Vec3f(float(x), float(y + y0), float(hz[j, i]))
            for j, y in enumerate(ys) for i, x in enumerate(xs)]
@@ -120,6 +130,18 @@ vapi.GetSuspensionLineQueryTypeAttr().Set(
     PhysxSchema.Tokens.sweep if QUERY == "sweep" else PhysxSchema.Tokens.raycast)
 vapi.CreateLimitSuspensionExpansionVelocityAttr(LIMIT)
 (front_axle, rear_axle), sag = vp.suspension()
+FRAME_Z = vp.wheel_radius + vp.suspension_travel - sag
+ATTACH = [((vp.wheel_base if front else 0.0), side * vp.wheel_tread / 2)
+          for _, front, side in WHEELS]
+contact = rc.TireContact([rc.Corner(*(front_axle if front else rear_axle),
+                                    vp.suspension_travel, vp.wheel_radius, vp.wheel_width)
+                          for _, front, _ in WHEELS]) if OURS else None
+sim = omni.physx.get_physx_simulation_interface()
+STAGE_ID = omni.usd.get_context().get_stage_id()
+BODY = PhysicsSchemaTools.sdfPathToInt("/World/ego")
+road_ms = []
+last_contact = {}
+z_att_prev = None
 
 world.reset()
 world.play()
@@ -129,7 +151,37 @@ cmd = Command(received=True, gear=GEAR_DRIVE)
 step_s = []
 
 
+def road_contact():
+    """066 R5: the model's step from the body as the last step left it; its forces for the
+    next step, its loads as each wheel's friction."""
+    global z_att_prev
+    t0 = time.perf_counter()
+    pos, q = state.position, state.quat
+    att = [qrot(q, (x, y, FRAME_Z)) for x, y in ATTACH]
+    xy = np.array([[pos[0] + a[0], pos[1] + a[1]] for a in att])
+    z_att = np.array([pos[2] + a[2] for a in att])
+    v_att = np.zeros(4) if z_att_prev is None else (z_att - z_att_prev) / DT
+    z_att_prev = z_att
+    fwd = qrot(q, (1.0, 0.0, 0.0))
+    yaw = math.atan2(fwd[1], fwd[0])
+    heading = np.array([[math.cos(yaw), math.sin(yaw)]] * 4)
+    o = contact.step(DT, fc.world_height, lambda x, y: fc.world_height(x, y, base=True), xy,
+                     heading, np.full(4, state.velocity[0]), z_att, v_att)
+    scale = contact.friction_scale(o["load"], o["px_load"])
+    for i in range(4):
+        cz = pos[2] + att[i][2] - FRAME_Z + vp.wheel_radius  # about the wheel's centre
+        f = (float(o["dfx"][i] * heading[i, 0]), float(o["dfx"][i] * heading[i, 1]),
+             float(o["dfz"][i]))
+        sim.apply_force_at_pos(STAGE_ID, BODY, f, (float(xy[i, 0]), float(xy[i, 1]), cz))
+        veh.set_wheel_friction(i, vp.tire_friction * float(scale[i]))
+    last_contact.update(tl=o["load"], tlmax=o["load_inner"].max(axis=1), pl=o["px_load"],
+                        za=z_att * 1000.0)  # mm
+    road_ms.append(time.perf_counter() - t0)
+
+
 def substep():
+    if OURS and veh.last is not None:
+        road_contact()
     veh.apply(cmd, DT, state)
     t0 = time.perf_counter()
     world.step(render=False)
@@ -172,6 +224,12 @@ def drive(name, speed, offset=0.0):
         UsdPhysics.RigidBodyAPI(rp).GetVelocityAttr().Set(Gf.Vec3f(0, 0, 0))
         UsdPhysics.RigidBodyAPI(rp).GetAngularVelocityAttr().Set(Gf.Vec3f(0, 0, 0))
     cmd.tire_angle = 0.0
+    if OURS:
+        global z_att_prev
+        contact.reset()
+        z_att_prev = None
+        for i in range(4):
+            veh.set_wheel_friction(i, vp.tire_friction)
     for _ in range(20 * SUB):
         cmd.velocity, cmd.acceleration = 0.0, 0.0
         substep()
@@ -188,12 +246,16 @@ def drive(name, speed, offset=0.0):
         t += DT
         if front >= lo:
             roll, pitch = euler(state.quat)
-            rows.append({"t": round(t, 4), "x": round(state.position[0], 4),
+            row = {"t": round(t, 4), "x": round(state.position[0], 4),
                          "z": round(state.position[2], 4), "vz_w": round(
                              (state.position[2] - z_prev) / DT, 4),
                          "roll": round(roll, 3), "pitch": round(pitch, 3),
                          "vx": round(state.velocity[0], 3),
-                         "wheels": [wheel_row(wp) for wp in veh.wheel_paths]})
+                   "wheels": [wheel_row(wp) for wp in veh.wheel_paths]}
+            if OURS:
+                for key, v in last_contact.items():
+                    row[key] = [round(float(c), 1) for c in v]
+            rows.append(row)
     with open(os.path.join(OUT, f"{name}@{speed:g}+{offset:g}.jsonl"), "w") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
@@ -206,21 +268,29 @@ def summary(name, speed, rows):
     static = float(np.mean([r["wheels"][0]["load"] for r in pre])) if pre else float("nan")
     z0 = float(np.mean([r["z"] for r in pre])) if pre else rows[0]["z"]
     load = np.array([r["wheels"][0]["load"] for r in rows])
+    peak = load
+    if OURS:  # the model's tire, not PhysX's spring on the base road
+        static = float(np.mean([r["tl"][0] for r in pre])) if pre else float("nan")
+        load = np.array([r["tl"][0] for r in rows])
+        peak = np.array([r["tlmax"][0] for r in rows])
     fx = np.array([r["x"] + vp.wheel_base for r in rows]) - fc.X0
     rise = np.nonzero(load > static * 1.05)[0]
     vz = np.array([r["vz_w"] for r in rows])
     az = np.diff(vz) / DT if len(vz) > 1 else np.zeros(1)
-    t_off = sum(DT for r in rows if not r["wheels"][0]["on"])
+    t_off = sum(DT for r in rows if not r["wheels"][0]["on"]) if not OURS else \
+        float(sum(DT for r in rows if r["tl"][0] <= 0.0))
     hits = [r["wheels"][0]["hit"][0] - fc.X0 for r in rows
             if r["wheels"][0]["on"] and -0.5 < r["wheels"][0]["hit"][0] - fc.X0 < 1.0]
     tops = [r["wheels"][0]["hit"][2] for r in rows if r["wheels"][0]["on"]]
-    return {"static_N": round(static, 1), "peak_N": round(float(load.max()), 1),
+    return {"static_N": round(static, 1), "peak_N": round(float(peak.max()), 1),
             "min_N": round(float(load.min()), 1),
             "first_rise_x": None if not len(rise) else round(float(fx[rise[0]]), 3),
             "body_acc_peak": round(float(np.abs(az).max()), 2),
             "airborne_s": round(t_off, 3), "body_rise_m": round(float(max(r["z"] for r in rows)
                                                                       - z0), 3),
             "pitch_max": round(float(max(abs(r["pitch"]) for r in rows)), 2),
+            "fl_corner_rise_m": round((max(r["za"][0] for r in rows) - float(np.mean(
+                [r["za"][0] for r in pre]))) / 1000.0, 3) if OURS and pre else None,
             "fl_hit_max_z": round(float(max(tops)), 3) if tops else None,
             "fl_hits_near": [round(h, 3) for h in hits][:12]}
 
@@ -229,7 +299,7 @@ CASES = [("flat", 20.0, 0.0), ("cleat_05", 10.0, 0.0), ("cleat_10", 10.0, 0.0),
          ("cleat_15", 10.0, 0.0), ("pothole", 10.0, 0.0), ("washboard", 10.0, 0.0),
          ("washboard", 20.0, 0.0), ("kicker", 15.0, 0.0), ("boulder", 10.0, 0.0),
          ("rock", 5.0, 0.0)] + [("cleat_10", 20.0, 0.07 * k) for k in range(5)]
-out = {"query": QUERY, "limit_expansion": LIMIT, "physx_hz": RATE, "substeps_per_frame": SUB,
+out = {"tire": "ours" if OURS else "physx", "query": QUERY, "limit_expansion": LIMIT, "physx_hz": RATE, "substeps_per_frame": SUB,
        "vehicle_substeps": vp.physx_substeps, "wheel_state_keys": sorted(K),
        "rig": {"front": front_axle, "rear": rear_axle, "sag": sag,
                "travel": vp.suspension_travel, "wheel_radius": vp.wheel_radius,
@@ -238,6 +308,8 @@ out = {"query": QUERY, "limit_expansion": LIMIT, "physx_hz": RATE, "substeps_per
 for name, speed, offset in CASES:
     key = f"{name}@{speed:g}+{offset:g}"
     if ONLY and name not in ONLY and key not in ONLY:
+        continue
+    if OURS and name == "rock":
         continue
     t0 = time.perf_counter()
     rows = drive(name, speed, offset)
@@ -254,10 +326,23 @@ for name, speed, offset in CASES:
         sprung, k, c = front_axle
         s["reference"] = fc.reference(name, speed, sprung, k, c, travel=vp.suspension_travel,
                                       sag=sag, radius=vp.wheel_radius)[1]
+        if OURS:  # the same quarter car on road_contact's effective road: the coupling alone
+            one = rc.TireContact([rc.Corner(sprung, k, c, vp.suspension_travel, vp.wheel_radius,
+                                            vp.wheel_width)])
+            x0 = fc.X0 - 5.0
+            sx, w, _ = one.envelope(fc.LANES[name][1], np.array([[x0, fc.TREAD_HALF]]),
+                                    np.array([[1.0, 0.0]]), fc.EXTENT[name] + 20.0)
+            s["reference_cam"] = fc.reference(
+                name, speed, sprung, k, c, travel=vp.suspension_travel, sag=sag,
+                radius=vp.wheel_radius, road=(x0 + sx, w[0]))[1]
     out["cases"][key] = s
     print(key, json.dumps(s), flush=True)
 st = sorted(step_s)
 out["physx_step_ms"] = {"p50": round(st[len(st) // 2] * 1e3, 3),
                         "p95": round(st[int(len(st) * 0.95)] * 1e3, 3), "n": len(st)}
+if road_ms:
+    rm = sorted(road_ms)
+    out["road_contact_ms"] = {"p50": round(rm[len(rm) // 2] * 1e3, 3),
+                              "p95": round(rm[int(len(rm) * 0.95)] * 1e3, 3), "n": len(rm)}
 print("SPIKE-RESULT " + json.dumps(out))
 app.close()

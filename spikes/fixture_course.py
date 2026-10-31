@@ -80,6 +80,29 @@ LANES = {
     "boulder": (42.0, boulder(), 0.02, True),
     "rock": (48.0, flat(), None, False),  # a loose rock on flat ground (road_fixtures.py)
 }
+# What PhysX's query sees where the tire contact is ours (066 R5): the smooth base road. The
+# kicker is large-scale (a crest over 5 m), the base itself; every other fixture is detail.
+BASE = {name: (kicker() if name == "kicker" else flat()) for name in LANES}
+
+
+def lane_at(y):
+    """The lane a world y lies in."""
+    return min(LANES, key=lambda n: abs(LANES[n][0] - y))
+
+
+def world_height(x, y, base=False):
+    """The course's height at world (x, y), arrays: every lane's profile in its own band
+    (`base`: what PhysX's query sees)."""
+    x, y = np.broadcast_arrays(np.asarray(x, dtype=float), np.asarray(y, dtype=float))
+    out = np.zeros(x.shape)
+    for name, (y0, f, _, _) in LANES.items():
+        band = np.abs(y - y0) <= 3.0
+        if band.any():
+            g = BASE[name] if base else f
+            out[band] = g(x[band], y[band] - y0)
+    return out
+
+
 # The fixtures' x extents beyond X0, for sampling and for the run's window
 EXTENT = {"flat": 1.0, "cleat_05": 0.2, "cleat_10": 0.2, "cleat_15": 0.2, "pothole": 0.5,
           "washboard": 30.0, "kicker": 8.0, "boulder": 0.6, "rock": 0.3}
@@ -88,10 +111,12 @@ EDGES = {"cleat_05": (0.0, 0.2), "cleat_10": (0.0, 0.2), "cleat_15": (0.0, 0.2),
          "pothole": (0.0, 0.5), "kicker": (8.0,)}
 
 
-def lane_grid(name):
+def lane_grid(name, base=False):
     """The lane's mesh grid: x samples, y samples, heights (len(y), len(x)), in lane frame
-    (y relative to the lane centre)."""
+    (y relative to the lane centre); `base`: the base road's (BASE)."""
     _, f, dx, ydep = LANES[name]
+    if base:
+        f = BASE[name]
     ext = EXTENT[name]
     xs = [LANE_X[0], X0 - 1.0, LANE_X[1]]
     if dx is not None:
@@ -130,18 +155,23 @@ def envelope(x, h, r):
 
 
 def reference(name, speed, sprung, k, c, travel=0.20, sag=None, wheel_mass=42.0,
-              k_tire=230e3, c_tire=150.0, radius=0.370, bump=0.03, k_bump=None, rate=4000.0):
+              k_tire=230e3, c_tire=150.0, radius=0.370, bump=0.03, k_bump=None, rate=4000.0,
+              road=None):
     """A quarter car over the left track of `name` at `speed`: sprung mass on k, c; a wheel of
     `wheel_mass` on a tire spring k_tire that lifts off; the tire's geometric envelope; a
     progressive bump stop over the last `bump` m of compression travel (stiffness rising to
-    k_bump, default 20 k). Returns the time series and the summary the Isaac traces are
-    compared with."""
+    k_bump, default 20 k). `road`, (x, effective height), replaces the rigid disc's
+    envelope of the left track (R5: road_contact's cams, so that a comparison isolates the
+    coupling). Returns the time series and the summary the Isaac traces are compared with."""
     g = 9.81
     if sag is None:
         sag = sprung * g / k
     k_bump = 20 * k if k_bump is None else k_bump
-    x, h = track(name)
-    env = envelope(x, h, radius)
+    if road is None:
+        x, h = track(name)
+        env = envelope(x, h, radius)
+    else:
+        x, env = road
     dt = 1.0 / rate
     t_end = (x[-1] - x[0]) / speed
     n = int(t_end / dt)
