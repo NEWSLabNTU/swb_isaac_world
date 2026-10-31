@@ -10,8 +10,13 @@ gives each wheel what PhysX's lacks, against the one true height function:
   cams' height less the rear's over their spacing;
 - the tire's radial spring and damper, which lifts off;
 - the wheel's vertical mass (the unsprung corner);
-- the suspension's spring, damper, a progressive bump stop over its last `bump` m and a rebound
-  stop at full droop.
+- the suspension's spring, a digressive damper with more rebound than bump, a progressive bump
+  stop over its last `bump` m and a rebound stop at full droop (R2);
+- the anti-roll bars between the wheels of an axle (R2: Isaac's PhysX vehicle has none).
+
+PhysX's own travel may be longer than the real one (`px_travel`): its suspension frame raised by
+the difference, so that its droop is the real one and its rigid limit lies beyond our bump stop,
+where nothing on the road reaches it (R2).
 
 It integrates `inner` times per PhysX step (480 Hz at 60 Hz), with the body's attachment point
 moving on at its velocity from the step's start. What it returns per wheel is what PhysX's own
@@ -43,6 +48,15 @@ REBOUND_RATE = 20.0
 FRICTION_SCALE_MAX = 3.0
 
 
+def damper_force(v, c_bump, c_rebound, knee, high):
+    """A digressive two-way damper: `c_bump` (v > 0, compression) or `c_rebound` (v < 0) up to
+    `knee` m/s of shaft speed, `high` times that slope beyond it (the valve's blow-off). N, + :
+    resists compression."""
+    c = np.where(v > 0, c_bump, c_rebound)
+    a = np.abs(v)
+    return np.sign(v) * c * np.where(a <= knee, a, knee + high * (a - knee))
+
+
 @dataclass
 class Corner:
     """One wheel's corner: the suspension as aib's rig sets it, and what PhysX does not know."""
@@ -62,12 +76,28 @@ class Corner:
     # 235/45 R18's 106 mm section. Beyond it the rim's own stiffness adds (k_rim, 0: 10 k_tire).
     rim_clearance: float = 0.08
     k_rim: float = 0.0
+    # PhysX's travel, m (0: travel): longer than the real one, its frame raised by the
+    # difference, so its rigid limit is never reached (R2).
+    px_travel: float = 0.0
+    # The damper (R2; Model 3 curves are not published, all assumed): rebound over bump force at
+    # the same speed, the two averaging the rig's c at low speed (a passenger car's 2-3 : 1); a
+    # digressive knee (m/s) beyond which the slope falls to `damper_high` of the low one.
+    rebound_ratio: float = 3.0
+    damper_knee: float = 0.13
+    damper_high: float = 0.4
+
+    def damper(self, v):
+        """The damper's force at compression speed v, N (+ : resists compression)."""
+        cb = 2.0 * self.c / (1.0 + self.rebound_ratio)
+        return damper_force(v, cb, self.rebound_ratio * cb, self.damper_knee, self.damper_high)
 
 
 class TireContact:
     """The corners of one vehicle (or several: wheels are independent)."""
 
-    def __init__(self, corners, inner=8):
+    def __init__(self, corners, inner=8, bars=()):
+        """`bars`: anti-roll bars, (left wheel, right wheel, rate N/m of differential travel at
+        the wheel)."""
         self.n = n = len(corners)
         self.inner = inner
         f = lambda name: np.array([getattr(cn, name) for cn in corners], dtype=float)
@@ -81,6 +111,18 @@ class TireContact:
         self.krim = np.where(kr > 0, kr, 10.0 * self.kt)
         kb = f("k_bump")
         self.kb = np.where(kb > 0, kb, 20.0 * self.k)
+        pt = f("px_travel")
+        self.px_travel = np.where(pt > 0, pt, self.travel)
+        ratio = f("rebound_ratio")
+        self.c_bump = 2.0 * self.c / (1.0 + ratio)
+        self.c_reb = ratio * self.c_bump
+        self.knee, self.high = f("damper_knee"), f("damper_high")
+        self.bars = np.zeros((n, n))  # fs += bars @ jounce
+        for i, j, rate in bars:
+            self.bars[i, i] += rate
+            self.bars[j, j] += rate
+            self.bars[i, j] -= rate
+            self.bars[j, i] -= rate
         self.zu = np.zeros(n)  # wheel centre, world z
         self.vu = np.zeros(n)
         # The tire's static deflection: our wheel's centre sits this far below PhysX's rigid
@@ -167,9 +209,9 @@ class TireContact:
         W, S = _at(w, d_in), _at(slope, d_in)
         Wdot = np.diff(np.concatenate([self.w_prev[:, None], W], axis=1), axis=1) / h
         ZA = z_att[:, None] + v_att[:, None] * (np.arange(1, N + 1) * h)[None, :]
-        JP = self.travel[:, None] + zb_in + self.r[:, None] - ZA
+        JP = self.px_travel[:, None] + zb_in + self.r[:, None] - ZA
         VB = np.diff(np.concatenate([zb[:, None], zb_in], axis=1), axis=1) / h
-        FP = np.where(JP > 0, self.k[:, None] * np.clip(JP, 0, self.travel[:, None])
+        FP = np.where(JP > 0, self.k[:, None] * np.clip(JP, 0, self.px_travel[:, None])
                       + self.c[:, None] * (VB - v_att[:, None]), 0.0)
         FP = np.maximum(FP, 0.0)
         FS = np.empty((n, N))
@@ -177,11 +219,18 @@ class TireContact:
         COMP = np.empty((n, N))
         low = self.travel - self.bump
         kb_b = self.kb / self.bump
+        bars = self.bars if self.bars.any() else None
+        J = np.empty((n, N))
         for i in range(N):  # our wheel: sequential
-            j = self.travel + self.zu + self.defl0 - ZA[:, i]
-            fs = self.k * j + self.c * (self.vu - v_att)
+            # the jounce from full droop, which PhysX's frame keeps where the real one is
+            j = self.px_travel + self.zu + self.defl0 - ZA[:, i]
+            fs = self.k * j + damper_force(self.vu - v_att, self.c_bump, self.c_reb,
+                                           self.knee, self.high)
             over = np.maximum(j - low, 0.0)
             fs += kb_b * over * over + REBOUND_RATE * self.k * np.minimum(j, 0.0)
+            if bars is not None:
+                fs = fs + bars @ j
+            J[:, i] = j
             comp = W[:, i] + self.r - self.zu
             rim = np.maximum(comp - self.rim, 0.0)
             ft = self.kt * comp - self.ct * (self.vu - Wdot[:, i]) + self.krim * rim
@@ -198,6 +247,10 @@ class TireContact:
                "rim_strike": np.maximum(COMP.max(axis=1) - self.rim, 0.0)}
         out["w"] = w[:, 0]
         out["load_inner"] = FT  # the tire's force at each inner step, for diagnostics
+        out["susp_inner"] = FS  # the suspension's force on the body at each inner step
+        out["jounce"] = J[:, -1]
+        # PhysX's own jounce at its rigid limit at any inner step (R2: never, on the road)
+        out["px_limit"] = (JP >= self.px_travel[:, None] - 1e-3).any(axis=1)
         return out
 
     def friction_scale(self, load, px_load):
@@ -214,3 +267,22 @@ def _at(a, d):
     i = f.astype(int)
     rows = np.arange(a.shape[0]).reshape((-1,) + (1,) * (d.ndim - 1))
     return a[rows, i] + (a[rows, i + 1] - a[rows, i]) * (f - i)
+
+
+# The anti-roll bars' share of the suspension's roll stiffness, and the front bar's share of
+# the bars' (R2). Tesla publishes neither; a passenger car's bars carry about half its roll
+# stiffness, and a front-heavy split gives the understeer the Model 3 is reported to have
+# (all assumed). With the rig's springs and tires the car rolls about 2.5 deg/g.
+BAR_SHARE = 0.5
+BAR_FRONT = 0.6
+
+
+def anti_roll_bars(front, rear, k_front, k_rear, share=BAR_SHARE, front_share=BAR_FRONT):
+    """The bars for TireContact's `bars`: `front` and `rear` the (left, right) wheel indices,
+    k_front and k_rear the axles' spring rates (N/m at the wheel). The bars' roll stiffness is
+    `share` / (1 - share) of the springs' (k t^2 / 2 per axle), split `front_share` to the
+    front; a bar's rate at the wheel, k_bar, gives k_bar t^2 of roll stiffness, so the tread
+    cancels."""
+    springs = (k_front + k_rear) / 2.0  # roll stiffness / t^2
+    bars = springs * share / (1.0 - share)
+    return [(front[0], front[1], bars * front_share), (rear[0], rear[1], bars * (1 - front_share))]

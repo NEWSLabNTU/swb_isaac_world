@@ -23,6 +23,7 @@ from swb_isaac_world import road_contact as rc  # noqa: E402
 # aib's Model 3 front corner (066 R0)
 SPRUNG, K, C = 413.6, 41.8e3, 3.74e3
 TRAVEL, SAG, R, WIDTH = 0.20, 0.097, 0.37, 0.235
+PX_TRAVEL = 0.30  # R2: PhysX's travel beyond the real one, its frame raised to match
 
 
 def run(name, speed, rate=60.0, vsub=8, inner=8):
@@ -30,10 +31,11 @@ def run(name, speed, rate=60.0, vsub=8, inner=8):
     y = fc.TREAD_HALF
     height = lambda x, yy: f(x, yy)
     base = lambda x, yy: np.zeros(np.broadcast(x, yy).shape)
-    tc = rc.TireContact([rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH)], inner=inner)
+    tc = rc.TireContact([rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH, px_travel=PX_TRAVEL)],
+                        inner=inner)
     dt = 1.0 / rate
     x = fc.X0 - 5.0
-    z_att = R + TRAVEL - SAG + 0.0  # attachment at rest, base at 0
+    z_att = R + PX_TRAVEL - SAG + 0.0  # attachment at rest, base at 0
     j_rest = SAG
     z_rest = z_att
     vz = 0.0
@@ -46,7 +48,7 @@ def run(name, speed, rate=60.0, vsub=8, inner=8):
         h = dt / vsub
         for _ in range(vsub):  # PhysX's corner on the base road
             j = j_rest + (z_rest - z_att)
-            fp = K * min(max(j, 0), TRAVEL) - C * vz if j > 0 else 0.0
+            fp = K * min(max(j, 0), PX_TRAVEL) - C * vz if j > 0 else 0.0
             fp = max(fp, 0.0)
             a = (fp + o["dfz"][0]) / SPRUNG - rc.G
             vz += a * h
@@ -85,7 +87,8 @@ if __name__ == "__main__":
         ours = run(name, v)
         ref = fc.reference(name, v, SPRUNG, K, C, travel=TRAVEL, sag=SAG, radius=R)[1]
         refc = fc.reference(name, v, SPRUNG, K, C, travel=TRAVEL, sag=SAG, radius=R,
-                            road=cam_road(name), rim=rc.Corner.rim_clearance)[1]
+                            road=cam_road(name), rim=rc.Corner.rim_clearance,
+                            damper=rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH).damper)[1]
         out[f"{name}@{v}"] = {"ours60": ours, "ref_cam": refc, "ref_disc": ref}
         print(name, v, json.dumps(ours), "\n   ref_cam ", json.dumps(refc),
               "\n   ref_disc", json.dumps(ref), flush=True)

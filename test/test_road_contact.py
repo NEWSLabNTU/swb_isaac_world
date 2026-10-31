@@ -74,3 +74,50 @@ class RoadContactTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CornerForces(unittest.TestCase):
+    """R2: the damper, the anti-roll bars and PhysX's longer travel."""
+
+    def test_damper_is_digressive_and_rebounds_harder(self):
+        cn = rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH)
+        bump, reb = cn.damper(0.05), -cn.damper(-0.05)
+        self.assertAlmostEqual((bump + reb) / 2, C * 0.05, delta=1.0)  # the rig's c on average
+        self.assertAlmostEqual(reb / bump, 3.0, places=6)
+        # beyond the knee the slope falls to damper_high of the low one
+        slope = (cn.damper(1.0) - cn.damper(0.5)) / 0.5
+        self.assertAlmostEqual(slope, cn.damper(0.1) / 0.1 * cn.damper_high, places=3)
+
+    def test_longer_physx_travel_changes_nothing_at_rest(self):
+        for px in (TRAVEL, 0.30):
+            tc = rc.TireContact([rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH, px_travel=px)])
+            z = np.array([R + px - SAG])
+            for _ in range(30):
+                o = tc.step(DT, flat, flat, np.array([[0.0, 0.0]]), np.array([[1.0, 0.0]]),
+                            np.array([0.0]), z, np.zeros(1))
+            self.assertLess(abs(o["dfz"][0]), 5.0)
+            self.assertAlmostEqual(o["jounce"][0], SAG, delta=1e-3)
+            self.assertFalse(o["px_limit"][0])
+
+    def test_bars_resist_roll_only(self):
+        corners = [rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH) for _ in range(2)]
+        bars = rc.anti_roll_bars((0, 1), (0, 1), K, K)[:1]
+        tc = rc.TireContact(corners, bars=bars)
+        free = rc.TireContact(corners)
+        xy = np.array([[0.0, 0.8], [0.0, -0.8]])
+        hd = np.array([[1.0, 0.0], [1.0, 0.0]])
+        za = np.full(2, R + TRAVEL - SAG)
+
+        def settle(t, dz):
+            t.reset()
+            for _ in range(60):
+                o = t.step(DT, flat, flat, xy, hd, np.zeros(2), za + dz, np.zeros(2))
+            return o["dfz"]
+
+        roll = np.array([-0.02, 0.02])  # left down (compressed), right up
+        with_bars, without = settle(tc, roll), settle(free, roll)
+        extra = with_bars - without
+        self.assertGreater(extra[0], 0.0)  # pushes the compressed side up
+        self.assertAlmostEqual(extra[0], -extra[1], delta=1.0)  # and the other down: no heave
+        self.assertLess(np.abs(settle(tc, np.full(2, 0.02)) - settle(free, np.full(2, 0.02))).max(),
+                        1.0)  # heave: the bar does nothing

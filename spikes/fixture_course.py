@@ -156,14 +156,15 @@ def envelope(x, h, r):
 
 def reference(name, speed, sprung, k, c, travel=0.20, sag=None, wheel_mass=42.0,
               k_tire=230e3, c_tire=150.0, radius=0.370, bump=0.03, k_bump=None, rate=4000.0,
-              road=None, rim=None, k_rim=None):
+              road=None, rim=None, k_rim=None, damper=None):
     """A quarter car over the left track of `name` at `speed`: sprung mass on k, c; a wheel of
     `wheel_mass` on a tire spring k_tire that lifts off; the tire's geometric envelope; a
     progressive bump stop over the last `bump` m of compression travel (stiffness rising to
     k_bump, default 20 k). `road`, (x, effective height), replaces the rigid disc's
     envelope of the left track (R5: road_contact's cams, so that a comparison isolates the
     coupling). `rim`: the tire's deflection where the rim strikes, m (None: never), stiffening
-    by k_rim (default 10 k_tire) beyond it. Returns the time series and the summary the Isaac traces are compared with."""
+    by k_rim (default 10 k_tire) beyond it. `damper`: the damper's force at a compression speed
+    (R2's digressive two-way one), in place of c v. Returns the time series and the summary the Isaac traces are compared with."""
     g = 9.81
     if sag is None:
         sag = sprung * g / k
@@ -185,12 +186,13 @@ def reference(name, speed, sprung, k, c, travel=0.20, sag=None, wheel_mass=42.0,
         xi = x[0] + speed * i * dt
         road = float(np.interp(xi, x, env))
         defl = zu - zs  # + : compression beyond static
-        f_spring = k * defl + c * (vu - vs)
+        fd = c * (vu - vs) if damper is None else float(damper(vu - vs))
+        f_spring = k * defl + fd
         over = defl - (comp_room - bump)
         if over > 0:
             f_spring += k_bump * over ** 2 / bump  # progressive: 0 at contact, k_bump at the end
         if defl < -sag:  # full droop: the spring cannot pull
-            f_spring = max(f_spring, k * (-sag) + c * (vu - vs))
+            f_spring = max(f_spring, k * (-sag) + fd)
         tire_defl = road - zu
         f_tire = max(tire_static + k_tire * tire_defl + c_tire * (0.0 - vu), 0.0)
         if rim is not None and f_tire > 0:

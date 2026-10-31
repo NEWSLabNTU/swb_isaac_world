@@ -30,6 +30,13 @@ the true profile every PhysX step: its force on the body (`apply_force_at_pos`, 
 step) and the tire's load as each wheel's friction. Each row then also has the model's
 per-wheel load (`tl`), its inner-step peak (`tlmax`) and PhysX's own (`pl`). The rock lane is
 R4's and is skipped.
+
+R2 (with ROAD_TIRE=ours): the corner's damper is digressive with more rebound than bump
+(ROAD_DAMPER=linear: the rig's), the anti-roll bars are on (ROAD_BARS=0: off), and
+ROAD_TRAVEL is PhysX's travel only, its frame raised to match: the corner keeps the rig's
+travel, so PhysX's rigid limit lies beyond our bump stop. Each row has the suspension forces at
+the inner steps (`fs_in`, all four wheels summed) and whether PhysX's jounce reached its limit.
+The `circle` cases drive a flat pad at a held speed and steer angle: the roll gradient.
 """
 import dataclasses
 import json
@@ -101,6 +108,15 @@ def lane_mesh(name):
 
 
 verts = {name: lane_mesh(name) for name in fc.LANES}
+# A flat pad for the steady circles (R2's roll gradient): x 40-160, y -190 to -70
+PAD = (40.0, 160.0, -190.0, -70.0)
+pad = UsdGeom.Mesh.Define(stage, "/World/env/Pad/mesh")
+pad.CreatePointsAttr([Gf.Vec3f(PAD[0], PAD[2], 0), Gf.Vec3f(PAD[1], PAD[2], 0),
+                      Gf.Vec3f(PAD[1], PAD[3], 0), Gf.Vec3f(PAD[0], PAD[3], 0)])
+pad.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+pad.CreateFaceVertexCountsAttr([4])
+UsdPhysics.CollisionAPI.Apply(pad.GetPrim())
+UsdPhysics.MeshCollisionAPI.Apply(pad.GetPrim()).CreateApproximationAttr("none")
 ROCK = "/World/env/rock"
 ROCK_SIZE = (0.25, 0.25, 0.15)
 ROCK_AT = (fc.X0 + 0.15, fc.LANES["rock"][0] + fc.TREAD_HALF, ROCK_SIZE[2] / 2 + 0.002)
@@ -119,6 +135,7 @@ cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
     HERE, "../deps/autoware_isaac_bridge/src/aib/config/ego.yaml"))
 rig = cfg.load_rig()
 vp = rig.vehicle
+REAL_TRAVEL = vp.suspension_travel  # the corner's, whatever PhysX's is
 if os.environ.get("ROAD_TRAVEL"):  # more compression room, the same sag
     vp = dataclasses.replace(vp, suspension_travel=float(os.environ["ROAD_TRAVEL"]))
 if os.environ.get("ROAD_VSUB"):
@@ -133,9 +150,17 @@ vapi.CreateLimitSuspensionExpansionVelocityAttr(LIMIT)
 FRAME_Z = vp.wheel_radius + vp.suspension_travel - sag
 ATTACH = [((vp.wheel_base if front else 0.0), side * vp.wheel_tread / 2)
           for _, front, side in WHEELS]
-contact = rc.TireContact([rc.Corner(*(front_axle if front else rear_axle),
-                                    vp.suspension_travel, vp.wheel_radius, vp.wheel_width)
-                          for _, front, _ in WHEELS]) if OURS else None
+LINEAR = os.environ.get("ROAD_DAMPER", "") == "linear"
+BARS = os.environ.get("ROAD_BARS", "1") != "0"
+CORNERS = [rc.Corner(*(front_axle if front else rear_axle), REAL_TRAVEL, vp.wheel_radius,
+                     vp.wheel_width, px_travel=vp.suspension_travel,
+                     **({"rebound_ratio": 1.0, "damper_high": 1.0} if LINEAR else {}))
+           for _, front, _ in WHEELS]
+SIDES = {(front, side): i for i, (_, front, side) in enumerate(WHEELS)}
+BAR_RATES = rc.anti_roll_bars((SIDES[(True, 1)], SIDES[(True, -1)]),
+                              (SIDES[(False, 1)], SIDES[(False, -1)]),
+                              front_axle[1], rear_axle[1]) if BARS else []
+contact = rc.TireContact(CORNERS, bars=BAR_RATES) if OURS else None
 sim = omni.physx.get_physx_simulation_interface()
 STAGE_ID = omni.usd.get_context().get_stage_id()
 BODY = PhysicsSchemaTools.sdfPathToInt("/World/ego")
@@ -175,7 +200,8 @@ def road_contact():
              float(o["dfz"][i]))
         sim.apply_force_at_pos(STAGE_ID, BODY, f, (float(xy[i, 0]), float(xy[i, 1]), cz))
         veh.set_wheel_friction(i, vp.tire_friction * float(scale[i]))
-    last_contact.update(rim=o["rim_strike"] * 1000.0, tl=o["load"], tlmax=o["load_inner"].max(axis=1), pl=o["px_load"],
+    last_contact.update(fs_in=o["susp_inner"].sum(axis=0), px_limit=o["px_limit"] * 1.0,
+                        rim=o["rim_strike"] * 1000.0, tl=o["load"], tlmax=o["load_inner"].max(axis=1), pl=o["px_load"],
                         za=z_att * 1000.0)  # mm
     road_ms.append(time.perf_counter() - t0)
 
@@ -274,6 +300,60 @@ def drive(name, speed, offset=0.0, brake=False):
     return rows
 
 
+CIRCLE_START = (100.0, -175.0)
+
+
+def circle(speed, steer, settle=10.0, hold=6.0):
+    """A steady circle on the pad: roll against lateral acceleration (v x yaw rate)."""
+    veh.teleport(((CIRCLE_START[0], CIRCLE_START[1], 0.05), (1.0, 0.0, 0.0, 0.0)), physx)
+    if OURS:
+        global z_att_prev
+        contact.reset()
+        z_att_prev = None
+    for _ in range(20 * SUB):
+        cmd.velocity, cmd.acceleration, cmd.tire_angle = 0.0, 0.0, 0.0
+        substep()
+    t, rows, yaw_prev = 0.0, [], None
+    while t < settle + hold:
+        cmd.velocity = speed
+        cmd.acceleration = max(-3.0, min(3.0, 1.5 * (speed - state.velocity[0])))
+        cmd.tire_angle = steer if state.velocity[0] > 0.5 * speed else 0.0
+        substep()
+        t += DT
+        fwd = qrot(state.quat, (1.0, 0.0, 0.0))
+        yaw = math.atan2(fwd[1], fwd[0])
+        if yaw_prev is not None and t > settle:
+            r = math.remainder(yaw - yaw_prev, 2 * math.pi) / DT
+            roll, _ = euler(state.quat)
+            rows.append((state.velocity[0] * r, roll, state.position[0], state.position[1]))
+        yaw_prev = yaw
+    a = np.array(rows)
+    out = {"ay": round(float(a[:, 0].mean()), 3), "roll_deg": round(float(a[:, 1].mean()), 3),
+           "on_pad": bool(PAD[0] < a[:, 2].min() and a[:, 2].max() < PAD[1]
+                          and PAD[2] < a[:, 3].min() and a[:, 3].max() < PAD[3])}
+    out["deg_per_g"] = round(abs(out["roll_deg"]) / (abs(out["ay"]) / 9.81), 3)
+    return out
+
+
+def landing(rows):
+    """The kicker's landing: the four suspension forces' sum at the inner steps (`fs_in`),
+    its peak as g of the car's weight and its width at half the peak above static (ms)."""
+    fs = np.concatenate([r["fs_in"] for r in rows if "fs_in" in r])
+    if not len(fs):
+        return None
+    weight = vp.mass * 9.81
+    i = int(fs.argmax())
+    half = weight + (fs[i] - weight) / 2
+    lo = i
+    while lo > 0 and fs[lo - 1] > half:
+        lo -= 1
+    hi = i
+    while hi < len(fs) - 1 and fs[hi + 1] > half:
+        hi += 1
+    return {"peak_g": round(float(fs[i] / weight), 2),
+            "half_width_ms": round((hi - lo + 1) * DT / contact.inner * 1e3, 1)}
+
+
 def summary(name, speed, rows):
     """The front-left wheel and the body over the fixture, in the reference's terms."""
     pre = [r for r in rows if r["x"] + vp.wheel_base < fc.X0 - 2.0]
@@ -304,6 +384,11 @@ def summary(name, speed, rows):
             "fl_corner_rise_m": round((max(r["za"][0] for r in rows) - float(np.mean(
                 [r["za"][0] for r in pre]))) / 1000.0, 3) if OURS and pre else None,
             "fl_hit_max_z": round(float(max(tops)), 3) if tops else None,
+            # PhysX's jounce at its rigid limit, steps (R2: none)
+            "rigid_limit_steps": sum(1 for r in rows if any(
+                w.get("suspension_jounce", 0.0) >= vp.suspension_travel - 1e-3
+                for w in r["wheels"] if w["on"])),
+            "landing": landing(rows) if OURS and name == "kicker" else None,
             "fl_hits_near": [round(h, 3) for h in hits][:12]}
 
 
@@ -316,7 +401,8 @@ BRAKES = [("flat", 15.0), ("cleat_10", 10.0), ("washboard", 15.0), ("pothole", 1
 out = {"tire": "ours" if OURS else "physx", "query": QUERY, "limit_expansion": LIMIT, "physx_hz": RATE, "substeps_per_frame": SUB,
        "vehicle_substeps": vp.physx_substeps, "wheel_state_keys": sorted(K),
        "rig": {"front": front_axle, "rear": rear_axle, "sag": sag,
-               "travel": vp.suspension_travel, "wheel_radius": vp.wheel_radius,
+               "travel": REAL_TRAVEL, "physx_travel": vp.suspension_travel,
+               "damper": "linear" if LINEAR else "digressive", "bars": BAR_RATES, "wheel_radius": vp.wheel_radius,
                "wheel_mass": vp.wheel_mass, "wheel_base": vp.wheel_base},
        "lane_vertices": verts, "cases": {}}
 for name, speed, offset in CASES:
@@ -338,19 +424,31 @@ for name, speed, offset in CASES:
     s["wall_s"] = round(time.perf_counter() - t0, 1)
     if name != "flat" and name != "rock":
         sprung, k, c = front_axle
-        s["reference"] = fc.reference(name, speed, sprung, k, c, travel=vp.suspension_travel,
+        s["reference"] = fc.reference(name, speed, sprung, k, c, travel=REAL_TRAVEL,
                                       sag=sag, radius=vp.wheel_radius)[1]
         if OURS:  # the same quarter car on road_contact's effective road: the coupling alone
-            one = rc.TireContact([rc.Corner(sprung, k, c, vp.suspension_travel, vp.wheel_radius,
-                                            vp.wheel_width)])
+            one = rc.TireContact([CORNERS[0]])
             x0 = fc.X0 - 5.0
             sx, w, _ = one.envelope(fc.LANES[name][1], np.array([[x0, fc.TREAD_HALF]]),
                                     np.array([[1.0, 0.0]]), fc.EXTENT[name] + 20.0)
             s["reference_cam"] = fc.reference(
-                name, speed, sprung, k, c, travel=vp.suspension_travel, sag=sag,
-                radius=vp.wheel_radius, road=(x0 + sx, w[0]), rim=rc.Corner.rim_clearance)[1]
+                name, speed, sprung, k, c, travel=REAL_TRAVEL, sag=sag,
+                radius=vp.wheel_radius, road=(x0 + sx, w[0]), rim=rc.Corner.rim_clearance,
+                damper=CORNERS[0].damper)[1]
     out["cases"][key] = s
     print(key, json.dumps(s), flush=True)
+CIRCLES = [(8.0, 0.12), (11.0, 0.12), (13.0, 0.12)]
+for speed, steer in CIRCLES:
+    key = f"circle@{speed:g}"
+    if ONLY and "circle" not in ONLY and key not in ONLY:
+        continue
+    out["cases"][key] = circle(speed, steer)
+    print(key, json.dumps(out["cases"][key]), flush=True)
+ci = [out["cases"][f"circle@{v:g}"] for v, _ in CIRCLES if f"circle@{v:g}" in out["cases"]]
+if len(ci) > 1:  # the roll gradient: the slope of roll over lateral g
+    ay = np.array([c["ay"] for c in ci]) / 9.81
+    out["roll_gradient_deg_per_g"] = round(float(abs(np.polyfit(ay, [c["roll_deg"] for c in ci],
+                                                              1)[0])), 3)
 for name, speed in BRAKES:
     key = f"{name}@{speed:g}brake"
     if ONLY and key not in ONLY:
