@@ -85,7 +85,7 @@ if __name__ == "__main__":
         ours = run(name, v)
         ref = fc.reference(name, v, SPRUNG, K, C, travel=TRAVEL, sag=SAG, radius=R)[1]
         refc = fc.reference(name, v, SPRUNG, K, C, travel=TRAVEL, sag=SAG, radius=R,
-                            road=cam_road(name))[1]
+                            road=cam_road(name), rim=rc.Corner.rim_clearance)[1]
         out[f"{name}@{v}"] = {"ours60": ours, "ref_cam": refc, "ref_disc": ref}
         print(name, v, json.dumps(ours), "\n   ref_cam ", json.dumps(refc),
               "\n   ref_disc", json.dumps(ref), flush=True)

@@ -156,13 +156,14 @@ def envelope(x, h, r):
 
 def reference(name, speed, sprung, k, c, travel=0.20, sag=None, wheel_mass=42.0,
               k_tire=230e3, c_tire=150.0, radius=0.370, bump=0.03, k_bump=None, rate=4000.0,
-              road=None):
+              road=None, rim=None, k_rim=None):
     """A quarter car over the left track of `name` at `speed`: sprung mass on k, c; a wheel of
     `wheel_mass` on a tire spring k_tire that lifts off; the tire's geometric envelope; a
     progressive bump stop over the last `bump` m of compression travel (stiffness rising to
     k_bump, default 20 k). `road`, (x, effective height), replaces the rigid disc's
     envelope of the left track (R5: road_contact's cams, so that a comparison isolates the
-    coupling). Returns the time series and the summary the Isaac traces are compared with."""
+    coupling). `rim`: the tire's deflection where the rim strikes, m (None: never), stiffening
+    by k_rim (default 10 k_tire) beyond it. Returns the time series and the summary the Isaac traces are compared with."""
     g = 9.81
     if sag is None:
         sag = sprung * g / k
@@ -192,6 +193,10 @@ def reference(name, speed, sprung, k, c, travel=0.20, sag=None, wheel_mass=42.0,
             f_spring = max(f_spring, k * (-sag) + c * (vu - vs))
         tire_defl = road - zu
         f_tire = max(tire_static + k_tire * tire_defl + c_tire * (0.0 - vu), 0.0)
+        if rim is not None and f_tire > 0:
+            over_rim = tire_static / k_tire + tire_defl - rim
+            if over_rim > 0:
+                f_tire += (10 * k_tire if k_rim is None else k_rim) * over_rim
         a_s = (f_spring) / sprung
         a_u = (f_tire - tire_static - f_spring) / wheel_mass
         vs += a_s * dt

@@ -58,6 +58,10 @@ class Corner:
     c_tire: float = 150.0  # tire radial damping, N s/m
     bump: float = 0.03  # the bump stop's engagement before full compression, m
     k_bump: float = 0.0  # the bump stop's rate at full compression, N/m (0: 20 k)
+    # The tire's deflection at which the rim meets the road through it, m: three quarters of a
+    # 235/45 R18's 106 mm section. Beyond it the rim's own stiffness adds (k_rim, 0: 10 k_tire).
+    rim_clearance: float = 0.08
+    k_rim: float = 0.0
 
 
 class TireContact:
@@ -72,6 +76,9 @@ class TireContact:
         self.r, self.width, self.m = f("radius"), f("width"), f("wheel_mass")
         self.kt, self.ct = f("k_tire"), f("c_tire")
         self.bump = f("bump")
+        self.rim = f("rim_clearance")
+        kr = f("k_rim")
+        self.krim = np.where(kr > 0, kr, 10.0 * self.kt)
         kb = f("k_bump")
         self.kb = np.where(kb > 0, kb, 20.0 * self.k)
         self.zu = np.zeros(n)  # wheel centre, world z
@@ -135,7 +142,8 @@ class TireContact:
         PhysX's own is known from the body and the base road alone. Returns a dict of per-wheel arrays: dfz, dfx (N, the step's mean), load
         (the tire's mean radial force, N), px_load (PhysX's spring and damper, N), airborne
         (share of the step with no tire force), w (effective height at the step's start),
-        load_inner (n, inner) the tire's force at each inner step."""
+        load_inner (n, inner) the tire's force at each inner step, rim_strike (m, > 0: the rim
+        struck the road through the tire)."""
         n, N = self.n, self.inner
         h = dt / N
         span = float(np.max(np.abs(speed))) * dt
@@ -153,45 +161,43 @@ class TireContact:
             self.vu = np.zeros(n)
             self.ready = True
             self.w_prev = w[:, 0].copy()
-        out = {k: np.zeros(n) for k in ("dfz", "dfx", "load", "px_load", "airborne")}
-        trace = np.zeros((n, N))
-        w_last = self.w_prev
-        for i in range(1, N + 1):
-            t = i * h
-            d = np.abs(speed) * t
-            wi, si = _at(w, d), _at(slope, d)
-            za = z_att + v_att * t
-            # ours
-            j = self.travel + self.zu + self.defl0 - za
-            rate = self.vu - v_att
-            fs = self.k * j + self.c * rate
-            over = j - (self.travel - self.bump)
-            fs = fs + np.where(over > 0, self.kb * np.maximum(over, 0) ** 2 / self.bump, 0.0)
-            fs = fs + np.where(j < 0, REBOUND_RATE * self.k * j, 0.0)
-            wdot = (wi - w_last) / h
-            comp = wi + self.r - self.zu
-            ft = np.maximum(self.kt * comp - self.ct * (self.vu - wdot), 0.0)
-            ft = np.where(comp > 0, ft, 0.0)
+        # What does not depend on our wheel, for every inner step at once (n, N): the road
+        # under the tire, the attachment's height, and PhysX's spring and damper on the base
+        # road (its wheel rigid on the base; no force once its wheel leaves it).
+        W, S = _at(w, d_in), _at(slope, d_in)
+        Wdot = np.diff(np.concatenate([self.w_prev[:, None], W], axis=1), axis=1) / h
+        ZA = z_att[:, None] + v_att[:, None] * (np.arange(1, N + 1) * h)[None, :]
+        JP = self.travel[:, None] + zb_in + self.r[:, None] - ZA
+        VB = np.diff(np.concatenate([zb[:, None], zb_in], axis=1), axis=1) / h
+        FP = np.where(JP > 0, self.k[:, None] * np.clip(JP, 0, self.travel[:, None])
+                      + self.c[:, None] * (VB - v_att[:, None]), 0.0)
+        FP = np.maximum(FP, 0.0)
+        FS = np.empty((n, N))
+        FT = np.empty((n, N))
+        COMP = np.empty((n, N))
+        low = self.travel - self.bump
+        kb_b = self.kb / self.bump
+        for i in range(N):  # our wheel: sequential
+            j = self.travel + self.zu + self.defl0 - ZA[:, i]
+            fs = self.k * j + self.c * (self.vu - v_att)
+            over = np.maximum(j - low, 0.0)
+            fs += kb_b * over * over + REBOUND_RATE * self.k * np.minimum(j, 0.0)
+            comp = W[:, i] + self.r - self.zu
+            rim = np.maximum(comp - self.rim, 0.0)
+            ft = self.kt * comp - self.ct * (self.vu - Wdot[:, i]) + self.krim * rim
+            ft = np.where(comp > 0, np.maximum(ft, 0.0), 0.0)
             self.vu = self.vu + (ft - fs - self.m * G) / self.m * h
             self.zu = self.zu + self.vu * h
-            w_last = wi
-            # PhysX's, on the base road (its wheel rigid on the base; no force off it)
-            jp = self.travel + zb_in[:, i - 1] + self.r - za
-            vb = (zb_in[:, i - 1] - (zb_in[:, i - 2] if i > 1 else zb)) / h
-            fp = np.where(jp > 0, self.k * np.clip(jp, 0, self.travel) + self.c * (vb - v_att),
-                          0.0)
-            fp = np.maximum(fp, 0.0)
-            out["dfz"] += fs - fp
-            out["dfx"] += -ft * si * sgn
-            out["load"] += ft
-            trace[:, i - 1] = ft
-            out["px_load"] += fp
-            out["airborne"] += (ft <= 0)
-        self.w_prev = w_last
-        for k in out:
-            out[k] /= N
+            FS[:, i], FT[:, i], COMP[:, i] = fs, ft, comp
+        self.w_prev = W[:, -1].copy()
+        out = {"dfz": (FS - FP).mean(axis=1), "dfx": -(FT * S).mean(axis=1) * sgn,
+               "load": FT.mean(axis=1), "px_load": FP.mean(axis=1),
+               "airborne": (FT <= 0).mean(axis=1),
+               # the tire's deflection beyond the rim's clearance at its worst, m (> 0: the
+               # rim struck the road: a pinch, a bent rim)
+               "rim_strike": np.maximum(COMP.max(axis=1) - self.rim, 0.0)}
         out["w"] = w[:, 0]
-        out["load_inner"] = trace  # the tire's force at each inner step, for diagnostics
+        out["load_inner"] = FT  # the tire's force at each inner step, for diagnostics
         return out
 
     def friction_scale(self, load, px_load):
@@ -201,8 +207,10 @@ class TireContact:
 
 
 def _at(a, d):
-    """Each row of `a` (sampled every DU from 0) at its own distance d (m), linearly."""
+    """Each row of `a` (sampled every DU from 0) at its own distances d (n,) or (n, k) (m),
+    linearly."""
+    d = np.asarray(d, dtype=float)
     f = np.clip(d / DU, 0.0, a.shape[1] - 1.000001)
     i = f.astype(int)
-    rows = np.arange(a.shape[0])
+    rows = np.arange(a.shape[0]).reshape((-1,) + (1,) * (d.ndim - 1))
     return a[rows, i] + (a[rows, i + 1] - a[rows, i]) * (f - i)

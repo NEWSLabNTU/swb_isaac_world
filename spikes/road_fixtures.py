@@ -164,7 +164,8 @@ def road_contact():
     z_att_prev = z_att
     fwd = qrot(q, (1.0, 0.0, 0.0))
     yaw = math.atan2(fwd[1], fwd[0])
-    heading = np.array([[math.cos(yaw), math.sin(yaw)]] * 4)
+    steer = (veh.tire_angle, veh.tire_angle, 0.0, 0.0)  # WHEELS' order
+    heading = np.array([[math.cos(yaw + a), math.sin(yaw + a)] for a in steer])
     o = contact.step(DT, fc.world_height, lambda x, y: fc.world_height(x, y, base=True), xy,
                      heading, np.full(4, state.velocity[0]), z_att, v_att)
     scale = contact.friction_scale(o["load"], o["px_load"])
@@ -174,7 +175,7 @@ def road_contact():
              float(o["dfz"][i]))
         sim.apply_force_at_pos(STAGE_ID, BODY, f, (float(xy[i, 0]), float(xy[i, 1]), cz))
         veh.set_wheel_friction(i, vp.tire_friction * float(scale[i]))
-    last_contact.update(tl=o["load"], tlmax=o["load_inner"].max(axis=1), pl=o["px_load"],
+    last_contact.update(rim=o["rim_strike"] * 1000.0, tl=o["load"], tlmax=o["load_inner"].max(axis=1), pl=o["px_load"],
                         za=z_att * 1000.0)  # mm
     road_ms.append(time.perf_counter() - t0)
 
@@ -213,7 +214,11 @@ def wheel_row(wp):
     return r
 
 
-def drive(name, speed, offset=0.0):
+BRAKE_AT = 3.0  # m before the fixture, where a braking case starts its stop
+BRAKE = -6.0  # m/s^2 asked of the onboard computers
+
+
+def drive(name, speed, offset=0.0, brake=False):
     """Hold `speed` along the lane from x = 40 + offset through the fixture; per-step rows
     while the front axle is between X0 - 5 and the fixture's end + 12."""
     y = fc.LANES[name][0]
@@ -239,7 +244,11 @@ def drive(name, speed, offset=0.0):
         front = state.position[0] + vp.wheel_base
         cmd.velocity = speed
         cmd.acceleration = max(-3.0, min(3.0, 1.5 * (speed - state.velocity[0])))
-        if front > hi or t > 60.0:
+        if brake and front >= fc.X0 - BRAKE_AT:
+            cmd.velocity, cmd.acceleration = 0.0, BRAKE
+            if state.velocity[0] < 0.05:
+                break
+        if front > hi + (60.0 if brake else 0.0) or t > 60.0:
             break
         z_prev = state.position[2]
         substep()
@@ -251,12 +260,15 @@ def drive(name, speed, offset=0.0):
                              (state.position[2] - z_prev) / DT, 4),
                          "roll": round(roll, 3), "pitch": round(pitch, 3),
                          "vx": round(state.velocity[0], 3),
+                   "ax": round(state.acceleration[0], 3),
+                   "slip": [round(ws.slip, 3) for ws in veh.wheel_states or ()],
                    "wheels": [wheel_row(wp) for wp in veh.wheel_paths]}
             if OURS:
                 for key, v in last_contact.items():
                     row[key] = [round(float(c), 1) for c in v]
             rows.append(row)
-    with open(os.path.join(OUT, f"{name}@{speed:g}+{offset:g}.jsonl"), "w") as f:
+    tag = "brake" if brake else ""
+    with open(os.path.join(OUT, f"{name}@{speed:g}+{offset:g}{tag}.jsonl"), "w") as f:
         for r in rows:
             f.write(json.dumps(r) + "\n")
     return rows
@@ -299,6 +311,8 @@ CASES = [("flat", 20.0, 0.0), ("cleat_05", 10.0, 0.0), ("cleat_10", 10.0, 0.0),
          ("cleat_15", 10.0, 0.0), ("pothole", 10.0, 0.0), ("washboard", 10.0, 0.0),
          ("washboard", 20.0, 0.0), ("kicker", 15.0, 0.0), ("boulder", 10.0, 0.0),
          ("rock", 5.0, 0.0)] + [("cleat_10", 20.0, 0.07 * k) for k in range(5)]
+# Braking from BRAKE_AT before the fixture (R5: no kick at a step, the stop on washboard)
+BRAKES = [("flat", 15.0), ("cleat_10", 10.0), ("washboard", 15.0), ("pothole", 10.0)]
 out = {"tire": "ours" if OURS else "physx", "query": QUERY, "limit_expansion": LIMIT, "physx_hz": RATE, "substeps_per_frame": SUB,
        "vehicle_substeps": vp.physx_substeps, "wheel_state_keys": sorted(K),
        "rig": {"front": front_axle, "rear": rear_axle, "sag": sag,
@@ -334,9 +348,26 @@ for name, speed, offset in CASES:
                                     np.array([[1.0, 0.0]]), fc.EXTENT[name] + 20.0)
             s["reference_cam"] = fc.reference(
                 name, speed, sprung, k, c, travel=vp.suspension_travel, sag=sag,
-                radius=vp.wheel_radius, road=(x0 + sx, w[0]))[1]
+                radius=vp.wheel_radius, road=(x0 + sx, w[0]), rim=rc.Corner.rim_clearance)[1]
     out["cases"][key] = s
     print(key, json.dumps(s), flush=True)
+for name, speed in BRAKES:
+    key = f"{name}@{speed:g}brake"
+    if ONLY and key not in ONLY:
+        continue
+    rows = drive(name, speed, brake=True)
+    br = [r for r in rows if r["x"] + vp.wheel_base >= fc.X0 - BRAKE_AT]
+    x0 = br[0]["x"] if br else float("nan")
+    ax = np.array([r["ax"] for r in br])
+    out["cases"][key] = {
+        "stop_m": round(br[-1]["x"] - x0, 2) if br else None,
+        "ax_min": round(float(ax.min()), 2), "ax_max": round(float(ax.max()), 2),
+        # the largest step-to-step change of the deceleration: a kick
+        "ax_jump": round(float(np.abs(np.diff(ax)).max()), 2) if len(ax) > 1 else None,
+        "fl_slip_min": round(float(min(r["slip"][0] for r in br if r["slip"])), 3),
+        "fl_airborne_s": round(float(sum(DT for r in br if OURS and r["tl"][0] <= 0)), 3),
+        "rim_strike_mm": round(float(max(max(r.get("rim", [0])) for r in br)), 1)}
+    print(key, json.dumps(out["cases"][key]), flush=True)
 st = sorted(step_s)
 out["physx_step_ms"] = {"p50": round(st[len(st) // 2] * 1e3, 3),
                         "p95": round(st[int(len(st) * 0.95)] * 1e3, 3), "n": len(st)}
