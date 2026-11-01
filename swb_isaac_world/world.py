@@ -42,6 +42,7 @@ from . import motion as body_motion, signals as signal_table, sky as scenario_sk
 from . import vehicle_assets
 from . import walkers as walker_gait
 from .catalogue import check_ego, ego_body, ego_model, load_ego
+from . import road_layer
 from .surface_layer import SurfaceLayer, kinematic_wheels, sink_pose
 
 log = logging.getLogger("swb_isaac_world")
@@ -295,16 +296,28 @@ class IsaacWorld(WorldBase):
         if entry is None:
             return
         path, origin = entry
+        if os.path.exists(path):
+            self.surface = SurfaceLayer(self.stage, surfaces.load(path), origin,
+                                        self._apply_force, self._make_tiles)
+        self._load_road(os.path.join(os.path.dirname(path), road_layer.FILE), origin)
         if not os.path.exists(path):
             return
-        self.surface = SurfaceLayer(self.stage, surfaces.load(path), origin, self._apply_force,
-                                    self._make_tiles)
         log.info("surface map %s: %d zone(s)", path, len(self.surface.map.zones))
         for zid, cls, why in self.surface.map.unvalidated:
             log.warning("surface map %s: zone %s: soil on unvalidated %s parameters: %s", path,
                         zid, cls, why)
         if self.surface.tiles:
             self._settle_cut()
+
+    def _load_road(self, path, origin):
+        """The world's road detail (066 R3, `road_layer`), on the surface layer."""
+        if not os.path.exists(path):
+            return
+        layer = self.surface
+        layer.road = road_layer.RoadLayer(road_layer.load(path), origin, self._apply_force)
+        layer.road_meshes = road_layer.MeshStream(self.stage, layer.road)
+        log.info("road detail %s: %d corridor(s); the egos' tire contact is the road layer's",
+                 path, len(layer.road.detail.corridors))
 
     def _settle_cut(self, steps=10):
         """A few physics steps of their own for a soil zone's cut (collision switched off on
@@ -660,8 +673,13 @@ class IsaacWorld(WorldBase):
             from aib.isaac.ego import Ego
 
             # The scenario's declared box is the ego's chassis collider, as for any entity.
+            # On a road detail (066 R3) PhysX's travel is longer, its rigid limit beyond the
+            # corner's bump stop.
+            params = None
+            if self.surface is not None and self.surface.road is not None:
+                params = road_layer.vehicle_params(self.ego_rig.vehicle)
             ego = Ego(self.ego_rig, self.ego_ros, self.stage, path, pose, name=name,
-                      box_center=center, box_dims=dims,
+                      box_center=center, box_dims=dims, params=params,
                       projector=self.projector)
             # The ego is the rig's car (the Tesla Model 3 of aib's spec), the one its physics,
             # vehicle description and sensor kit are of, as the CARLA backend spawns it,

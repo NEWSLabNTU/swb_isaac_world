@@ -31,12 +31,16 @@ are not fed back, but its body shows how deep it stands: `kinematic_sinkage` giv
 sinkage over the last frame (its own and the ruts it rides in), and `sink_pose` turns the four
 into the drop and tilt the world puts on its visible body (052 step 4). Each substep updates the egos in handle order, then the kinematic vehicles in
 path order, so two runs of a scenario cut the same ruts.
+
+A world with a road detail (`road_layer`, roadmap 066 R3) has `road`: before each substep
+`place` runs the egos' tire contact on it, and each wheel's friction is the surface's times
+the contact's scale (the tire's load over PhysX's); `flush` streams its render mesh.
 """
 import logging
 import math
 import os
 
-from . import soil, surfaces
+from . import road_layer, soil, surfaces
 
 log = logging.getLogger("swb_isaac_world")
 
@@ -115,6 +119,10 @@ class SurfaceLayer:
         self.ruts = None  # the rut set the soil started from (`swb.ruts`), None: fresh
         self.driven = False  # a wheel has driven on the soil since then
         self.saved = True  # nothing driven since the last save
+        self.road = None  # road_layer.RoadLayer, with `road_meshes` its render mesh
+        self.road_meshes = None
+        self.mu = {}  # (vehicle path, wheel) -> the friction the surface gives, before the road's
+        self.near = []  # the egos' positions at the last place, for the road's meshes
         if make_tiles is not None:
             for z in surface_map.zones:
                 if z.ground_z is not None:
@@ -179,6 +187,9 @@ class SurfaceLayer:
                 self.soil_xy.pop((vehicle.path, i), None)
                 self.side_force.pop((vehicle.path, i), None)
             mu = ws.update(i, s, self.condition, speed, w.slip, dt, target, w.slip_angle)
+            self.mu[(vehicle.path, i)] = mu
+            if self.road is not None:
+                mu *= self.road.scale(vehicle.path, i)
             vehicle.set_wheel_friction(i, mu)
             vehicle.set_wheel_stiffness(i, *ws.stiffness[i])
             if s is not None and self.logged.get((vehicle.path, i)) != s:
@@ -192,7 +203,16 @@ class SurfaceLayer:
 
     def place(self, vehicles, dt):
         """Before a substep: the plates of the zones with their own ground under each aib
-        vehicle's wheels, where they will be after `dt` (`wheel_points`)."""
+        vehicle's wheels, where they will be after `dt` (`wheel_points`); the road detail's
+        contact for every vehicle, and its share of each wheel's friction."""
+        if self.road is not None:
+            self.road.before_substep(vehicles, dt)
+            self.near = [v.last[0] for v in vehicles if v.last is not None]
+            for v in vehicles:
+                for i in range(len(v.wheel_paths)):
+                    mu = self.mu.get((v.path, i))
+                    if mu is not None:
+                        v.set_wheel_friction(i, mu * self.road.scale(v.path, i))
         if not self.tiles:
             return
         wheels = {}
@@ -387,6 +407,8 @@ class SurfaceLayer:
         """Once per frame, after the substeps: the grids' new ruts into their zones' ground
         (budgeted); {zone id: tiles rebuilt}."""
         out = {}
+        if self.road_meshes is not None:
+            self.road_meshes.update(self.near)
         wheels = list(self.soil_xy.values())
         for zid, tiles in self.tiles.items():
             grid = self.grids.get(zid)
@@ -401,6 +423,10 @@ class SurfaceLayer:
         for t in self.tiles.values():
             t.remove()
         self.tiles = {}
+        if self.road_meshes is not None:
+            self.road_meshes.remove()
+        if self.road is not None:
+            self.road.close()
 
     def surfaces_under(self, vehicle):
         """The surface each wheel last stood on (None in the air), for logs and probes."""
@@ -412,6 +438,8 @@ class SurfaceLayer:
         ws = self.wheels.get(vehicle_path)
         if ws is not None:
             ws.reset()
+        if self.road is not None:
+            self.road.reset(vehicle_path)
 
     def forget(self, vehicle_path):
         self.wheels.pop(vehicle_path, None)
@@ -420,6 +448,9 @@ class SurfaceLayer:
         self.soil_out = {k: v for k, v in self.soil_out.items() if k[0] != vehicle_path}
         self.soil_xy = {k: v for k, v in self.soil_xy.items() if k[0] != vehicle_path}
         self.side_force = {k: v for k, v in self.side_force.items() if k[0] != vehicle_path}
+        self.mu = {k: v for k, v in self.mu.items() if k[0] != vehicle_path}
+        if self.road is not None:
+            self.road.forget(vehicle_path)
 
 
 def resistance_scale(speed):
@@ -483,5 +514,11 @@ def register(world_files):
         path = surfaces.find(map_dir)
         if path.exists():
             surfaces.load(path)  # refused here, not at the first LoadWorld
+        road = path.parent / road_layer.FILE
+        if road.exists():
+            try:
+                road_layer.load(road)
+            except road_layer.RoadDetailError as e:
+                raise surfaces.SurfaceError(str(e)) from e
         out[os.path.realpath(usd)] = (str(path), tuple(w.get("map_origin") or (0.0, 0.0, 0.0)))
     return out
