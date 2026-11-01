@@ -209,3 +209,19 @@ class Placement(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Prototypes(unittest.TestCase):
+    def test_a_scaled_prototype_is_one_rock_for_the_tire_and_the_mesh(self):
+        r = rk.scaled(5, 0.4)
+        self.assertEqual(r.proto, 5)
+        self.assertLess((r.verts @ r.planes[:, :3].T - r.planes[:, 3]).max(), 1e-9)
+        self.assertAlmostEqual(r.mass, rk.prototypes()[5].mass * 0.4 ** 3)
+        yaw, p = 0.7, np.array([3.0, 1.0, 0.1])
+        s = rk.RockSet([r], [p], [rk._yaw_quat(yaw)])
+        v, f = rk.merged([(r, p, yaw, False)])
+        # the merged mesh's highest point lies on the tire's top surface there
+        k = int(np.argmax(v[:, 2]))
+        t, i = s.top(np.array([v[k, 0]]), np.array([v[k, 1]]))
+        self.assertEqual(int(i[0]), 0)
+        self.assertAlmostEqual(float(t[0]), float(v[k, 2]), places=6)

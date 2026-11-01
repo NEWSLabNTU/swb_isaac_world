@@ -11,8 +11,8 @@ rest with the vehicles, once a frame (`update`):
   tile worker (`rocks.place`, the tile's extras): a tile's static rocks one merged collider,
   each loose rock its own rigid body, made at most PRIMS_PER_FRAME a frame;
 - a loose rock asleep (rigidBodyEnabled off: a static collider, no pose sync) until a vehicle
-  can touch it (within ACTIVE_SIDE of its track, ACTIVE_AHEAD to ACTIVE_BEHIND along it), and
-  asleep again where it lies; a tile leaving the window writes its loose rocks' poses back.
+  can touch it (within ACTIVE_SIDE of its line, ACTIVE_BEHIND behind to ACTIVE_S of travel
+  ahead), and asleep again where it lies; a tile leaving the window writes its loose rocks' poses back.
 
 The stage's cost grows with its prims, not their triangles (8531 rock prims took 16 ms a frame
 in rock_field.py; the window holds about 200). Each streamed collider is put in its collision
@@ -28,10 +28,15 @@ import numpy as np
 
 from . import rocks as rk
 
-COLLISION_REACH = 48.0  # m around a vehicle with collision tiles
+COLLISION_REACH = 32.0  # m around a vehicle with collision tiles
 COLLISION_STEP = 2  # every second 5 cm sample: 10 cm (p99 2.5 mm from the tire's height)
-ROCK_REACH = 48.0  # m around a vehicle with rock prims
-ACTIVE_AHEAD, ACTIVE_BEHIND, ACTIVE_SIDE = 30.0, 5.0, 2.5
+ROCK_REACH = 32.0  # m around a vehicle with rock prims (1.4 s at 80 km/h)
+# awake only in a vehicle's path: within ACTIVE_SIDE of its line (half its width and a
+# margin), from ACTIVE_BEHIND behind to ACTIVE_S of travel (at least ACTIVE_MIN) ahead of its
+# front; each awake rock costs PhysX and the contact (about 30 awake took 6.6 + 2.3 ms a
+# frame at 80 km/h)
+ACTIVE_S, ACTIVE_MIN, ACTIVE_BEHIND, ACTIVE_SIDE = 0.6, 8.0, 3.0, 1.5
+FRONT = 3.0  # m from a vehicle's origin (its rear axle) to its front, about
 PRIMS_PER_FRAME = 4  # rock prims made a frame at most: a tile's at once took 11 ms
 MAX_DEPENETRATION = 1.0  # m/s
 # a loose rock has its own rigid body only within this of the carriageway's and shoulder's
@@ -108,7 +113,7 @@ class RockStream:
         return m
 
     def update(self, points):
-        """Once a frame: `points` the vehicles' (x, y, yaw) in the world."""
+        """Once a frame: `points` the vehicles' (x, y, yaw[, speed m/s]) in the world."""
         d, ox, oy = self.layer.detail, self.layer.ox, self.layer.oy
         xs = [p[0] + ox for p in points]
         ys = [p[1] + oy for p in points]
@@ -163,7 +168,8 @@ class RockStream:
             if k not in self.loaded:
                 self._load(k)
             ids = self.loaded[k]
-            statics = [(rs.rocks[i], rs.pos[i], 0.0, False) for i in ids if not self.dyn[i]]
+            statics = [(rs.rocks[i], rs.pos[i], _yaw(rs.quat[i]), False)
+                       for i in ids if not self.dyn[i]]
             path = None
             if statics:
                 v, f = rk.merged(statics)
@@ -197,7 +203,7 @@ class RockStream:
         off = np.array([self.layer.ox, self.layer.oy, 0.0])
         n0 = len(self.paths)
         self.layer.rocks.add([r for r, *_ in entries], [p - off for _, p, _, _ in entries],
-                             [(1.0, 0.0, 0.0, 0.0)] * len(entries))
+                             [rk._yaw_quat(yaw) for _, _, yaw, _ in entries])
         self.paths.extend([None] * len(entries))
         self.dyn.extend([bool(dy) for *_, dy in entries])
         self.mass.extend([r.mass for r, *_ in entries])
@@ -210,11 +216,16 @@ class RockStream:
         rs = self.layer.rocks
         r = rs.rocks[i]
         path = f"{ROOT}/r{i}"
-        m = self._mesh(path, r.verts, Vt.IntArray.FromNumpy(r.faces.ravel().astype(np.int32)),
+        # a prototype's rock: its points unscaled and the size as the prim's scale, so PhysX
+        # cooks the shape once for every rock of it
+        pts = rk.prototypes()[r.proto].verts if r.proto is not None else r.verts
+        m = self._mesh(path, pts, Vt.IntArray.FromNumpy(r.faces.ravel().astype(np.int32)),
                        Vt.IntArray.FromNumpy(np.full(len(r.faces), 3, np.int32)),
                        "convexHull")
         m.AddTranslateOp().Set(Gf.Vec3d(*map(float, rs.pos[i])))
         m.AddOrientOp().Set(Gf.Quatf(*map(float, rs.quat[i])))
+        if r.proto is not None:
+            m.AddScaleOp().Set(Gf.Vec3f(float(r.scale), float(r.scale), float(r.scale)))
         rb = UsdPhysics.RigidBodyAPI.Apply(m.GetPrim())
         rb.CreateRigidBodyEnabledAttr(False)  # asleep: a static collider, no pose sync
         UsdPhysics.MassAPI.Apply(m.GetPrim()).CreateDensityAttr(rk.DENSITY)
@@ -250,11 +261,13 @@ class RockStream:
             return
         near = np.zeros(ids.size, dtype=bool)
         px, py = rs.pos[ids, 0], rs.pos[ids, 1]
-        for x, y, yaw in points:
+        for pt in points:
+            x, y, yaw = pt[:3]
+            ahead = max(ACTIVE_MIN, ACTIVE_S * abs(pt[3])) if len(pt) > 3 else ACTIVE_MIN
             c, s = math.cos(yaw), math.sin(yaw)
             along = (px - x) * c + (py - y) * s
             across = -(px - x) * s + (py - y) * c
-            near |= (along > -ACTIVE_BEHIND) & (along < ACTIVE_AHEAD + 3.0) \
+            near |= (along > -ACTIVE_BEHIND) & (along < FRONT + ahead) \
                 & (np.abs(across) < ACTIVE_SIDE)
         for i, n in zip(ids.tolist(), near.tolist()):
             a = self.active.get(i, False)
@@ -324,3 +337,8 @@ class RockStream:
         self.win.clear()
         self.paths = [None] * len(self.paths)
         self.active.clear()
+
+
+def _yaw(q):
+    """The heading of a (w, x, y, z) quaternion that turns about z only, rad."""
+    return 2.0 * math.atan2(float(q[3]), float(q[0]))

@@ -36,6 +36,8 @@ class Rock:
     volume: float
     mass: float
     radius: float
+    proto: int = None  # its prototype (`prototypes`), None: a shape of its own
+    scale: float = 1.0  # its size over the prototype's
 
     @property
     def height(self):
@@ -60,6 +62,38 @@ def make_rock(rng, d, axes=AXES, rough=0.15, n=48, density=DENSITY):
     c, s = math.cos(yaw), math.sin(yaw)
     p = p @ np.array([[c, -s, 0], [s, c, 0], [0, 0, 1]]).T
     return from_points(p, density)
+
+
+PROTOTYPES = 32  # placed rocks' shapes: PhysX cooks each once, every prim scales one
+_PROTOS = []
+
+
+def prototypes():
+    """PROTOTYPES rock shapes of long axis 1 m, short axis up, seeded: what placement scales
+    and turns (`scaled`). A prim of a prototype carries its points unscaled, its size as the
+    prim's scale and its heading as its orientation, so PhysX's cooking cache meets the same
+    mesh again (a hull cooked per rock cost the frame's step in rock_world.py)."""
+    if not _PROTOS:
+        rng = np.random.default_rng(2026)
+        n = 48
+        a = np.array(AXES) / AXES[0] / 2
+        for _ in range(PROTOTYPES):
+            q = _fibonacci(n) * a[None, :] * (1.0 + rng.uniform(-0.15, 0.15, size=(n, 1)))
+            _PROTOS.append(from_points(q))
+    return _PROTOS
+
+
+def scaled(k, s):
+    """Prototype k at long axis s m (its own frame: turned by its pose's orientation)."""
+    r = prototypes()[k]
+    pl = r.planes.copy()
+    pl[:, 3] *= s
+    return Rock(r.verts * s, r.faces, pl, r.volume * s ** 3, r.mass * s ** 3, r.radius * s,
+                proto=k, scale=s)
+
+
+def _yaw_quat(yaw):
+    return (math.cos(yaw / 2), 0.0, 0.0, math.sin(yaw / 2))
 
 
 def from_points(p, density=DENSITY):
@@ -379,7 +413,8 @@ def place(detail, i, j, zones=None):
                     continue  # beyond the corridor's ends
                 if not near[0] or cz.zone(c.section, v[0]) != name:
                     continue  # another zone's (each zone draws over the whole tile)
-                rock = make_rock(rng, 2 * d / (1 + AXES[1]))
+                rock = scaled(int(rng.integers(PROTOTYPES)), 2 * d / (1 + AXES[1]))
+                yaw = float(rng.uniform(0.0, 2 * math.pi))
                 embed = rng.uniform(*cz.embed)
                 h = float(detail.height(np.array([x]), np.array([y]))[0])
                 loose = rock.mass <= DYNAMIC_MAX_KG \
@@ -394,7 +429,7 @@ def place(detail, i, j, zones=None):
                 # thrown out of it when it wakes); a held one is sunk
                 z = float(c.base_z(u)[0]) + h - rock.verts[:, 2].min() \
                     - (0.0 if loose else sink)
-                out.append((rock, np.array([x, y, z]), 0.0, loose))
+                out.append((rock, np.array([x, y, z]), yaw, loose))
     return out
 
 
@@ -404,8 +439,9 @@ def merged(entries):
     prim so: the stage's cost grows with its prims, not with their triangles (R4: 8531 rock
     prims took 16 ms a frame, every USD change re-walking them)."""
     vs, fs, n = [], [], 0
-    for rock, p, _, _ in entries:
-        vs.append(rock.verts + p)
+    for rock, p, yaw, _ in entries:
+        c, s = math.cos(yaw), math.sin(yaw)
+        vs.append(rock.verts @ np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]]).T + p)
         fs.append(rock.faces + n)
         n += len(rock.verts)
     if not vs:

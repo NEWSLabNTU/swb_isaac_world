@@ -210,7 +210,7 @@ class SurfaceLayer:
         if self.road is not None:
             self.road.before_substep(vehicles, dt)
             self.near = [v.last[0] for v in vehicles if v.last is not None]
-            self.near_pose = [(p[0], p[1], _yaw(q)) for (p, q, _) in
+            self.near_pose = [(p[0], p[1], _yaw(q), math.hypot(w[0], w[1])) for (p, q, w) in
                               (v.last for v in vehicles if v.last is not None)]
             for v in vehicles:
                 for i in range(len(v.wheel_paths)):

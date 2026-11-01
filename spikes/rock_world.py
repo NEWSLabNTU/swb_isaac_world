@@ -50,6 +50,12 @@ os.makedirs(OUT, exist_ok=True)
 SPEEDS = [float(v) for v in os.environ.get("ROCK_SPEEDS", "40,60,80").split(",")]
 ROCKS_ON = os.environ.get("ROCKS", "1") == "1"
 CARRIAGEWAY = float(os.environ.get("ROCK_CARRIAGEWAY", "0.01"))
+NO_COVER = os.environ.get("ROCK_COVER") == "0"  # the tiles and the stream, no rocks
+if "ROCK_COLL_STEP" in os.environ:  # the collision tiles' spacing, in 5 cm samples
+    rock_layer.COLLISION_STEP = int(os.environ["ROCK_COLL_STEP"])
+ALL_STATIC = os.environ.get("ROCK_ALL_STATIC") == "1"  # no rock bodies: the prims' cost
+if "ROCK_COLL_REACH" in os.environ:
+    rock_layer.COLLISION_REACH = float(os.environ["ROCK_COLL_REACH"])
 LENGTH = float(os.environ.get("ROCK_LENGTH", "2000"))
 X_START = 20.0
 FRAME, SUB = 0.05, 3
@@ -77,7 +83,8 @@ corridor = rd.Corridor(
     ruts=rd.Ruts(offset=0.83), potholes=rd.Potholes(),
     washboard=(rd.Washboard(X_START + 600.0, X_START + 700.0, pitch=0.5),),
     water_bars=rd.WaterBars(at=(X_START + 1500.0, X_START + 1550.0, X_START + 1600.0)),
-    rocks=rk.Zones(carriageway=CARRIAGEWAY) if ROCKS_ON else None)  # the base filtered out
+    rocks=(rk.Zones(carriageway=0.0, shoulder=0.0, ditch=0.0) if NO_COVER
+           else rk.Zones(carriageway=CARRIAGEWAY)) if ROCKS_ON else None)
 
 sim = omni.physx.get_physx_simulation_interface()
 STAGE_ID = omni.usd.get_context().get_stage_id()
@@ -116,6 +123,8 @@ LATE = os.environ.get("ROCK_LATE") == "1"  # as the world server: the stream aft
 def stream():
     layer.rock_stream = rock_layer.RockStream(stage, layer, physx,
                                               ground=["/World/env/Base/mesh"])
+    if ALL_STATIC:
+        layer.rock_stream._in_band = lambda p: False  # every rock in its tile's collider
 
 
 if ROCKS_ON and not LATE:
@@ -144,7 +153,7 @@ def substep():
 def pose():
     p, q = state.position, state.quat
     f = qrot(q, (1.0, 0.0, 0.0))
-    return [(p[0], p[1], math.atan2(f[1], f[0]))]
+    return [(p[0], p[1], math.atan2(f[1], f[0]), state.velocity[0])]
 
 
 def frame_streams():
@@ -237,7 +246,7 @@ def run(kmh):
         mesh_ms, rock_ms = frame_streams()
         cmd.velocity = v
         cmd.acceleration = max(-3.0, min(3.0, 1.5 * (v - state.velocity[0])))
-        _, _, yaw = pose()[0]
+        _, _, yaw, _ = pose()[0]
         vs = max(v, 1.0)
         cmd.tire_angle = max(-0.05, min(0.05, -vp.wheel_base * (
             W_LAT ** 2 * state.position[1] / vs ** 2 + 2 * Z_LAT * W_LAT * yaw / vs)))
@@ -299,7 +308,9 @@ def run(kmh):
     return out
 
 
-res = {"rocks": ROCKS_ON, "carriageway_k": CARRIAGEWAY, "runs": {}}
+res = {"rocks": ROCKS_ON, "carriageway_k": CARRIAGEWAY, "no_cover": NO_COVER,
+       "coll_step": rock_layer.COLLISION_STEP, "coll_reach": rock_layer.COLLISION_REACH,
+       "runs": {}}
 for kmh in SPEEDS:
     r = run(kmh)
     res["runs"][f"{kmh:g}"] = r
