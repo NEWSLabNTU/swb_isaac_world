@@ -14,6 +14,13 @@ hands back. LAW_PARAMS="k=v,..." overrides law.Params (angles in deg where the f
 angle); AUTOWARE_DRIFT is the checkout (default ~/repos/autoware-drift). `<out>/drift.jsonl`
 has every frame of the drift (phase, sideslip, yaw rate, distance off the lane, contacts).
 
+LIVE=1 drives with autoware-drift's live planner (race_planner.serve) from LIVE_FROM m on;
+LIVE_MULTISTART=<JSON> is its init's `multistart` (null, one start: e.g. '{"schedule":
+{"always": false}}' for the surface rule's starts, `"always": true` for every start every
+re-plan); `<out>/live.jsonl` has every frame, with the seed and mode of the plan the car is on
+and each plan the first time it is adopted (serve.py's). SWB_REPO: the superproject (default
+three levels up), for running this file from another checkout.
+
 With PLAN=<npz> (autoware-drift race_planner.plan's, on this course's map frame) it tracks that
 minimum-time trajectory instead: a pure-pursuit run-up on the centreline to the plan's first
 speed, then from the plan's first s its steering as feedforward with feedback on the CoM's
@@ -60,7 +67,7 @@ logging.basicConfig(level=logging.INFO, stream=sys.stdout,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 log = logging.getLogger("course_probe")
 HERE = os.path.dirname(os.path.abspath(__file__))
-REPO = os.path.abspath(os.path.join(HERE, "../../.."))
+REPO = os.environ.get("SWB_REPO") or os.path.abspath(os.path.join(HERE, "../../.."))
 MAP = os.path.realpath(sys.argv[1])
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(
     REPO, "play_log/course_probe", time.strftime("%Y-%m-%d_%H-%M-%S"))
@@ -201,7 +208,8 @@ if LIVE:
         "map_dir": MAP, "spec": spec_path,
         "classes": os.path.join(REPO, "src/swb_isaac_world/config/surface_classes.yaml"),
         "l0": os.environ.get("LIVE_L0"), "grip": float(os.environ.get("LIVE_GRIP", "0.92")),
-        "budget": float(os.environ.get("LIVE_BUDGET", "1.0"))}}) + "\n")
+        "budget": float(os.environ.get("LIVE_BUDGET", "1.0")),
+        "multistart": json.loads(os.environ.get("LIVE_MULTISTART") or "null")}}) + "\n")
     live.stdin.flush()
     hello = json.loads(live.stdout.readline())
     spec = yaml.safe_load(open(spec_path))
@@ -381,7 +389,8 @@ while t < TIME_LIMIT:
         cmd.tire_angle = max(-STEER_MAX, min(STEER_MAX, float(ans["tire_angle"])))
         cmd.acceleration = float(ans["accel"])
         cmd.velocity = 60.0 if cmd.acceleration > 0 else 0.0
-        live_rows.append({"t": st["t"], "s": round(ans["s"], 2), "n": round(ans["n"], 3),
+        live_rows.append({"t": st["t"], "t_sim": round(t, 4), "s": round(ans["s"], 2),
+                          "n": round(ans["n"], 3),
                           "n_plan": ans["n_plan"], "xi_deg": round(math.degrees(ans["xi"]), 2),
                           "v": round(math.hypot(st["vx"], st["vy"]), 2), "v_plan": ans["v_plan"],
                           "beta_deg": round(math.degrees(math.atan2(st["vy"], max(st["vx"], 0.5))), 2),
@@ -393,6 +402,9 @@ while t < TIME_LIMIT:
                           "solve_s": round(ans["solve_s"], 3), "x": round(xc, 2), "y": round(yc, 2),
                           "contacts": contacts_now, "wheels": wheel_rows(ego.vehicle)})
         live_rows[-1]["stop"] = ans.get("stop")
+        for k in ("slot", "mode", "plan_id", "plan"):     # the plan the car is on (serve.py's)
+            if k in ans:
+                live_rows[-1][k] = ans[k]
         if ans.get("stop") and live_rows[-1]["v"] < 0.5:
             result = "stopped: " + ans["stop"]
             break
