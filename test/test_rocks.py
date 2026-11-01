@@ -225,3 +225,24 @@ class Prototypes(unittest.TestCase):
         t, i = s.top(np.array([v[k, 0]]), np.array([v[k, 1]]))
         self.assertEqual(int(i[0]), 0)
         self.assertAlmostEqual(float(t[0]), float(v[k, 2]), places=6)
+
+
+class Index(unittest.TestCase):
+    def test_near_is_the_full_scan(self):
+        rng = np.random.default_rng(3)
+        rocks = [rk.scaled(int(rng.integers(rk.PROTOTYPES)), float(rng.uniform(0.1, 1.5)))
+                 for _ in range(400)]
+        pos = np.c_[rng.uniform(-50, 50, 400), rng.uniform(-10, 10, 400), np.zeros(400)]
+        s = rk.RockSet(rocks, pos, [(1, 0, 0, 0)] * 400)
+        for _ in range(30):
+            x, y = rng.uniform(-50, 50, 6), rng.uniform(-10, 10, 6)
+            m = float(rng.uniform(0, 1))
+            x0, x1, y0, y1 = x.min(), x.max(), y.min(), y.max()
+            dx = np.maximum(np.maximum(x0 - pos[:, 0], pos[:, 0] - x1), 0.0)
+            dy = np.maximum(np.maximum(y0 - pos[:, 1], pos[:, 1] - y1), 0.0)
+            want = np.nonzero(np.hypot(dx, dy) <= s.r + m)[0]
+            np.testing.assert_array_equal(s.near(x, y, m), want)
+        was = pos[0].copy()
+        s.set_pose(0, (40.0, 8.0, 0.0), (1, 0, 0, 0))  # moved across cells
+        self.assertIn(0, s.near(np.array([40.0]), np.array([8.0])))
+        self.assertNotIn(0, s.near(np.array([was[0]]), np.array([was[1]])))

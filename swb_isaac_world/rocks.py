@@ -22,6 +22,7 @@ import numpy as np
 DENSITY = 2650.0  # kg/m^3, granite and basalt about 2.6-2.9; quartz sandstone 2.65
 AXES = (1.0, 0.7, 0.5)  # long : intermediate : short (Zingg's mean for river and road gravel)
 MAX_VERTS = 64  # PhysX's default hull vertex limit (and GPU contact's)
+GRID = 4.0  # m, RockSet's index cells
 GRAD_MAX = 3.0  # a face's gradient under a tire at most (72 deg): the tread rounds an edge
 
 
@@ -145,6 +146,22 @@ class RockSet:
         # whether the tire may stand on the rock: one off the ground (thrown, lifted by the
         # chassis) holds nothing up, its only support its own inertia
         self.seen = np.ones(len(self.rocks), dtype=bool)
+        # a grid of GRID m cells -> the rocks centred in them: `near` looks at the cells about
+        # its points, not at every rock loaded (thousands, ten times a substep)
+        self.cells, self.cell_of = {}, []
+        for i in range(len(self.rocks)):
+            self._file(i)
+
+    def _cell(self, i):
+        return (int(math.floor(self.pos[i, 0] / GRID)), int(math.floor(self.pos[i, 1] / GRID)))
+
+    def _file(self, i):
+        c = self._cell(i)
+        self.cells.setdefault(c, []).append(i)
+        if i < len(self.cell_of):
+            self.cell_of[i] = c
+        else:
+            self.cell_of.append(c)
 
     def add(self, rocks, pos, quat):
         """More rocks; their indices follow the ones there."""
@@ -154,10 +171,17 @@ class RockSet:
         self.r = np.concatenate([self.r, [r.radius for r in rocks]])
         self._planes += [None] * len(rocks)
         self.seen = np.concatenate([self.seen, np.ones(len(rocks), dtype=bool)])
+        for i in range(len(self.rocks) - len(rocks), len(self.rocks)):
+            self._file(i)
 
     def set_pose(self, i, pos, quat):
         self.pos[i], self.quat[i] = pos, quat
         self._planes[i] = None
+        c = self._cell(i)
+        if c != self.cell_of[i]:  # moved into another cell
+            self.cells[self.cell_of[i]].remove(i)
+            self.cells.setdefault(c, []).append(i)
+            self.cell_of[i] = c
 
     def planes(self, i):
         """Rock i's face planes in the world: n . X <= h."""
@@ -187,9 +211,19 @@ class RockSet:
             return np.zeros(0, dtype=int)
         x, y = np.ravel(x), np.ravel(y)
         x0, x1, y0, y1 = x.min(), x.max(), y.min(), y.max()
-        dx = np.maximum(np.maximum(x0 - self.pos[:, 0], self.pos[:, 0] - x1), 0.0)
-        dy = np.maximum(np.maximum(y0 - self.pos[:, 1], self.pos[:, 1] - y1), 0.0)
-        return np.nonzero((np.hypot(dx, dy) <= self.r + margin) & self.seen)[0]
+        pad = float(self.r.max()) + margin
+        cand = [i for cx in range(int(math.floor((x0 - pad) / GRID)),
+                                  int(math.floor((x1 + pad) / GRID)) + 1)
+                for cy in range(int(math.floor((y0 - pad) / GRID)),
+                                int(math.floor((y1 + pad) / GRID)) + 1)
+                for i in self.cells.get((cx, cy), ())]
+        if not cand:
+            return np.zeros(0, dtype=int)
+        c = np.array(cand)
+        px, py = self.pos[c, 0], self.pos[c, 1]
+        dx = np.maximum(np.maximum(x0 - px, px - x1), 0.0)
+        dy = np.maximum(np.maximum(y0 - py, py - y1), 0.0)
+        return np.sort(c[(np.hypot(dx, dy) <= self.r[c] + margin) & self.seen[c]])
 
     def top(self, x, y, rocks=None, normals=False):
         """The highest rock surface over each point and its rock; with `normals`, also the
