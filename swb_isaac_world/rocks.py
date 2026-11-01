@@ -108,6 +108,18 @@ class RockSet:
         self.quat = np.asarray(quat, dtype=float).reshape(-1, 4)
         self.r = np.array([r.radius for r in self.rocks])
         self._planes = [None] * len(self.rocks)
+        # whether the tire may stand on the rock: one off the ground (thrown, lifted by the
+        # chassis) holds nothing up, its only support its own inertia
+        self.seen = np.ones(len(self.rocks), dtype=bool)
+
+    def add(self, rocks, pos, quat):
+        """More rocks; their indices follow the ones there."""
+        self.rocks += list(rocks)
+        self.pos = np.concatenate([self.pos, np.asarray(pos, dtype=float).reshape(-1, 3)])
+        self.quat = np.concatenate([self.quat, np.asarray(quat, dtype=float).reshape(-1, 4)])
+        self.r = np.concatenate([self.r, [r.radius for r in rocks]])
+        self._planes += [None] * len(rocks)
+        self.seen = np.concatenate([self.seen, np.ones(len(rocks), dtype=bool)])
 
     def set_pose(self, i, pos, quat):
         self.pos[i], self.quat[i] = pos, quat
@@ -123,15 +135,27 @@ class RockSet:
                 [n, (pl[:, 3] + n @ self.pos[i])[:, None]], axis=1)
         return p
 
+    def bottom(self, i):
+        """Rock i's lowest point, world z."""
+        return float(self.pos[i, 2] + (self.rocks[i].verts @ _rot(self.quat[i]).T)[:, 2].min())
+
+    def rest(self, i, road, gap=0.03):
+        """Whether rock i rests on the road (its lowest point within `gap` of the road
+        under its centre), as `seen` keeps it."""
+        z = float(np.asarray(road(np.array([self.pos[i, 0]]), np.array([self.pos[i, 1]])))[0])
+        self.seen[i] = self.bottom(i) - z <= gap
+        return self.seen[i]
+
     def near(self, x, y, margin=0.0):
-        """The rocks whose bounding circle comes within `margin` of any point."""
+        """The rocks the tire may stand on whose bounding circle comes within `margin` of
+        any point."""
         if not self.rocks:
             return np.zeros(0, dtype=int)
         x, y = np.ravel(x), np.ravel(y)
         x0, x1, y0, y1 = x.min(), x.max(), y.min(), y.max()
         dx = np.maximum(np.maximum(x0 - self.pos[:, 0], self.pos[:, 0] - x1), 0.0)
         dy = np.maximum(np.maximum(y0 - self.pos[:, 1], self.pos[:, 1] - y1), 0.0)
-        return np.nonzero(np.hypot(dx, dy) <= self.r + margin)[0]
+        return np.nonzero((np.hypot(dx, dy) <= self.r + margin) & self.seen)[0]
 
     def top(self, x, y, rocks=None, normals=False):
         """The highest rock surface over each point and its rock; with `normals`, also the
@@ -258,3 +282,91 @@ def limit(forces, mass, v_rock, v_push, dt):
     room = max(0.0, v_push - float(np.dot(v_rock[:2], u))) * mass
     sc = min(1.0, room / j)
     return [(np.array([f[0] * sc, f[1] * sc, f[2]]), p) for f, p in forces], sc
+
+
+# --- placement ------------------------------------------------------------------------------
+
+D_MIN = 0.09  # m, plan diameter of the smallest rock placed (about 1 kg); smaller is gravel,
+# a surface class (047's soil), not a body
+D_MAX = 1.5  # m
+DYNAMIC_MAX_KG = 50.0  # heavier rocks are static: no car moves them
+EMBED_LOOSE = 0.15  # a rock sunk deeper than this share of its height is held: static
+
+
+@dataclass
+class Zones:
+    """Golombek-Rapp rock cover k (the fraction of the ground's area under rocks) by where on
+    the cross-section: assumed values for a forest road, the carriageway swept by traffic, the
+    shoulder and ditch where rocks from the cut slope come to rest."""
+
+    carriageway: float = 0.002
+    shoulder: float = 0.01
+    ditch: float = 0.03
+    embed: tuple = (0.0, 0.4)  # the share of a rock's height below the surface, uniform
+
+    def k(self, section, v):
+        a = np.abs(v)
+        w = section.half_width
+        return np.where(a <= w, self.carriageway,
+                        np.where(a <= w + section.shoulder, self.shoulder,
+                                 np.where(a <= section.extent(), self.ditch, 0.0)))
+
+
+def golombek_rapp(k, d):
+    """The number of rocks per m^2 of plan diameter between d and d + dd, per dd: from the
+    cumulative fractional area F(D) = k exp(-q D), q = 1.79 + 0.152 / k (Golombek and Rapp
+    1997, D in m), as -F'(D) over one rock's area."""
+    q = 1.79 + 0.152 / k
+    return k * q * np.exp(-q * d) / (math.pi * d * d / 4.0)
+
+
+def _sizes(rng, k, area, n_grid=400):
+    """Plan diameters of the rocks on `area` m^2 at cover k."""
+    d = np.geomspace(D_MIN, D_MAX, n_grid)
+    pdf = golombek_rapp(k, d)
+    cdf = np.concatenate([[0.0], np.cumsum((pdf[1:] + pdf[:-1]) / 2 * np.diff(d))])
+    n = rng.poisson(area * cdf[-1])
+    return np.interp(rng.uniform(0, cdf[-1], n), cdf, d)
+
+
+def place(detail, i, j, zones=None):
+    """The rocks of tile (i, j) of a road_detail.Detail: a list of (Rock, position (3,), yaw,
+    dynamic), each a seeded draw from its corridor and tile, so a tile placed again is the
+    same. A rock rests on the true surface (the detail's height; the base is z 0 here, as the
+    detail is above it), sunk by its embed share; it is dynamic if loose and light."""
+    zones = zones or Zones()
+    t = detail.tile
+    out = []
+    for ci, c in enumerate(detail.corridors):
+        rng = c._rng(4, i, j)
+        for name in ("carriageway", "shoulder", "ditch"):
+            k = getattr(zones, name)
+            if k <= 0:
+                continue
+            for d in _sizes(rng, k, t * t):
+                x, y = (i + rng.uniform()) * t, (j + rng.uniform()) * t
+                _, v, near = c.uv(np.array([x]), np.array([y]))
+                if not near[0] or zones.k(c.section, v)[0] != k:
+                    continue  # another zone's (each zone draws over the whole tile)
+                rock = make_rock(rng, 2 * d / (1 + AXES[1]))
+                embed = rng.uniform(*zones.embed)
+                z = float(detail.height(np.array([x]), np.array([y]))[0]) \
+                    - rock.verts[:, 2].min() - embed * rock.height
+                out.append((rock, np.array([x, y, z]), 0.0,
+                            embed <= EMBED_LOOSE and rock.mass <= DYNAMIC_MAX_KG))
+    return out
+
+
+def merged(entries):
+    """The rocks of `entries` ((Rock, position, yaw, dynamic)) as one triangle mesh in the
+    world: (verts (k, 3), faces (f, 3)). A tile's static rocks are one collider and one render
+    prim so: the stage's cost grows with its prims, not with their triangles (R4: 8531 rock
+    prims took 16 ms a frame, every USD change re-walking them)."""
+    vs, fs, n = [], [], 0
+    for rock, p, _, _ in entries:
+        vs.append(rock.verts + p)
+        fs.append(rock.faces + n)
+        n += len(rock.verts)
+    if not vs:
+        return np.zeros((0, 3)), np.zeros((0, 3), dtype=int)
+    return np.concatenate(vs), np.concatenate(fs)

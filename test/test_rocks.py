@@ -57,6 +57,18 @@ class Hull(unittest.TestCase):
         self.assertAlmostEqual(z.max(), r.verts[:, 2].max() + s.pos[0, 2], delta=0.01)
 
 
+class Support(unittest.TestCase):
+    def test_a_rock_off_the_ground_holds_nothing_up(self):
+        r = rk.make_rock(np.random.default_rng(2), 0.2)
+        s = rk.RockSet([r], [(0.0, 0.0, -r.verts[:, 2].min())], [(1, 0, 0, 0)])
+        self.assertTrue(s.rest(0, flat))
+        self.assertGreater(s.top(np.array([0.0]), np.array([0.0]))[0][0], 0.05)
+        s.set_pose(0, (0.0, 0.0, -r.verts[:, 2].min() + 0.2), (1, 0, 0, 0))  # thrown up
+        self.assertFalse(s.rest(0, flat))
+        self.assertEqual(s.top(np.array([0.0]), np.array([0.0]))[0][0], -np.inf)
+        self.assertEqual(s.height(flat)(np.array([0.0]), np.array([0.0]))[0], 0.0)
+
+
 class Shares(unittest.TestCase):
     def setUp(self):
         self.rock = rk.from_points(np.array([[x, y, z] for x in (-0.1, 0.1) for y in (-0.15, 0.15)
@@ -117,6 +129,42 @@ class Shares(unittest.TestCase):
         self.assertEqual(sc, 0.0)  # already faster than the tire: no more push
         out, sc = rk.limit(f, 200.0, np.zeros(3), 4.0, 1 / 60)
         self.assertEqual(sc, 1.0)
+
+
+class Placement(unittest.TestCase):
+    def detail(self, **kw):
+        from swb_isaac_world import road_detail as rd
+
+        c = rd.Corridor(np.array([[0.0, 0.0], [200.0, 0.0]]), seed=3,
+                        roughness=rd.Roughness(cls="C"))
+        return rd.Detail([c], extras="swb_isaac_world.rocks:place", **kw)
+
+    def test_a_tile_places_the_same_rocks_again(self):
+        a, b = rk.place(self.detail(), 3, 0), rk.place(self.detail(), 3, 0)
+        self.assertGreater(len(a), 0)
+        for (ra, pa, _, da), (rb, pb, _, db) in zip(a, b):
+            np.testing.assert_array_equal(ra.verts, rb.verts)
+            np.testing.assert_array_equal(pa, pb)
+            self.assertEqual(da, db)
+        self.assertTrue(all(r.mass <= rk.DYNAMIC_MAX_KG for r, _, _, d in a if d))
+
+    def test_the_worker_places_them(self):
+        here = rk.place(self.detail(), 3, 0)
+        d = self.detail(workers=1, processes=True)
+        try:
+            d.prefetch({(3, 0)})
+            d.tile_of(3, 0)
+            got = d.extra(3, 0)
+            self.assertEqual(len(got), len(here))
+            np.testing.assert_allclose(got[0][1], here[0][1])
+        finally:
+            d.close()
+
+    def test_static_rocks_merge(self):
+        e = rk.place(self.detail(), 3, 0)
+        v, f = rk.merged(e)
+        self.assertEqual(len(v), sum(len(r.verts) for r, *_ in e))
+        self.assertEqual(f.max(), len(v) - 1)
 
 
 if __name__ == "__main__":

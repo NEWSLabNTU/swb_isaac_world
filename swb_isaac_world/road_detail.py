@@ -296,14 +296,19 @@ class Detail:
     time when the car reaches it (one takes about 40 ms)."""
 
     def __init__(self, corridors, spacing=SPACING, tile=TILE, max_tiles=64, workers=0,
-                 processes=False):
+                 processes=False, extras=None):
+        """`extras`: "module:function", called as function(detail, i, j) after each tile is
+        made, where the tile is made (the worker), its result kept per tile (`extra`); rocks'
+        placement (`rocks:place`) is one."""
         import threading
         self.lock = threading.RLock()
         self.corridors = list(corridors)
         self.spacing, self.tile = spacing, tile
+        self.extras_name, self._extras_fn = extras, None
+        self.extras = {}  # (i, j) -> extras' result, kept for the session
         self.pool = None
         if workers and processes:
-            self.pool = TileProcess(self.corridors, spacing, tile)
+            self.pool = TileProcess(self.corridors, spacing, tile, extras)
         elif workers:
             import concurrent.futures
             self.pool = concurrent.futures.ThreadPoolExecutor(workers)
@@ -410,13 +415,16 @@ class Detail:
         t = None
         if job is not None:
             try:
-                t, _ = job.result()  # being made: wait for it
+                t, _, extra = job.result()  # being made: wait for it
             except Exception:  # the worker failed or is gone: make it here
                 t = None
         if t is None:
-            t, ms = self._timed(i, j)
+            t, ms, extra = self._timed(i, j)
             self.made_ms.append(ms)
         self._keep((i, j), t)
+        if self.extras_name:
+            with self.lock:
+                self.extras.setdefault((i, j), extra)
         self.stall_ms.append((_now() - t0) * 1e3)
         return t
 
@@ -465,14 +473,32 @@ class Detail:
 
     def _timed(self, i, j):
         t0 = _now()
-        return self._make(i, j), (_now() - t0) * 1e3
+        t = self._make(i, j)
+        extra = None
+        if self.extras_name:
+            if self._extras_fn is None:
+                import importlib
+
+                mod, fn = self.extras_name.split(":")
+                self._extras_fn = getattr(importlib.import_module(mod), fn)
+            self._keep((i, j), t)  # the extras read the tile's heights
+            extra = self._extras_fn(self, i, j)
+        return t, (_now() - t0) * 1e3, extra
+
+    def extra(self, i, j):
+        """The tile's extras, once made (None before)."""
+        with self.lock:
+            return self.extras.get((i, j))
 
     def _made(self, key, job):
         try:
             if not job.cancelled() and job.exception() is None:
-                t, ms = job.result()
+                t, ms, extra = job.result()
                 self.made_ms.append(ms)
                 self._keep(key, t)
+                if self.extras_name:
+                    with self.lock:
+                        self.extras.setdefault(key, extra)
         finally:
             with self.lock:
                 self.pending.pop(key, None)
@@ -521,7 +547,7 @@ class TileProcess:
     multiprocessing: spawn would import the caller's __main__ again (a second SimulationApp),
     fork a process holding CUDA. The executor's `submit` and `shutdown`, for `Detail`."""
 
-    def __init__(self, corridors, spacing, tile):
+    def __init__(self, corridors, spacing, tile, extras=None):
         import os
         import pickle
         import subprocess
@@ -536,7 +562,7 @@ class TileProcess:
                                      stdout=subprocess.PIPE, env=env, cwd=root)
         self.lock = threading.Lock()
         self.jobs = {}  # (i, j) -> future, in the order asked
-        pickle.dump((corridors, spacing, tile), self.proc.stdin)
+        pickle.dump((corridors, spacing, tile, extras), self.proc.stdin)
         self.proc.stdin.flush()
         self.reader = threading.Thread(target=self._read, daemon=True)
         self.reader.start()
@@ -562,7 +588,7 @@ class TileProcess:
 
         while True:
             try:
-                key, t, ms = pickle.load(self.proc.stdout)
+                key, t, ms, extra = pickle.load(self.proc.stdout)
             except Exception as e:  # the child is gone: every waiting tile fails
                 with self.lock:
                     jobs, self.jobs = list(self.jobs.values()), {}
@@ -572,7 +598,7 @@ class TileProcess:
             with self.lock:
                 job = self.jobs.pop(key, None)
             if job is not None:
-                job.set_result((t, ms))
+                job.set_result((t, ms, extra))
 
     def shutdown(self, wait=False, cancel_futures=True):
         try:
@@ -586,8 +612,8 @@ class TileProcess:
 
 
 def _worker():
-    """The child of TileProcess: (corridors, spacing, tile), then (i, j) per tile, on stdin;
-    (key, heights, ms) per tile on stdout. Ends at stdin's end."""
+    """The child of TileProcess: (corridors, spacing, tile, extras), then (i, j) per tile, on
+    stdin; (key, heights, ms, extra) per tile on stdout. Ends at stdin's end."""
     import os
     import pickle
     import sys
@@ -595,15 +621,15 @@ def _worker():
     out = os.fdopen(os.dup(1), "wb")
     os.dup2(2, 1)  # anything printed goes to stderr, not into the tiles
     inp = sys.stdin.buffer
-    corridors, spacing, tile = pickle.load(inp)
-    d = Detail(corridors, spacing, tile, max_tiles=16)
+    corridors, spacing, tile, extras = pickle.load(inp)
+    d = Detail(corridors, spacing, tile, max_tiles=16, extras=extras)
     while True:
         try:
             key = pickle.load(inp)
         except EOFError:
             return
-        t, ms = d._timed(*key)
-        pickle.dump((key, t, ms), out, protocol=pickle.HIGHEST_PROTOCOL)
+        t, ms, extra = d._timed(*key)
+        pickle.dump((key, t, ms, extra), out, protocol=pickle.HIGHEST_PROTOCOL)
         out.flush()
 
 
