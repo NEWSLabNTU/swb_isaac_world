@@ -1,0 +1,326 @@
+"""Rocks on the road in the world server (roadmap 066 R4): the USD and PhysX side of
+`rocks`. Import after `SimulationApp`.
+
+`RoadLayer.rocks` (a `rocks.RockSet`, world frame) is what the tire reads; this streams the
+rest with the vehicles, once a frame (`update`):
+
+- collision tiles of the corridors' detail at 10 cm (base + detail, a triangle mesh each)
+  within COLLISION_REACH of a vehicle, in a group that rocks and the chassis collide with and
+  the wheels' ground query filters out;
+- prims for the rocks of the tiles within ROCK_REACH that have a collision tile, placed in the
+  tile worker (`rocks.place`, the tile's extras): a tile's static rocks one merged collider,
+  each loose rock its own rigid body, made at most PRIMS_PER_FRAME a frame;
+- a loose rock asleep (rigidBodyEnabled off: a static collider, no pose sync) until a vehicle
+  can touch it (within ACTIVE_SIDE of its track, ACTIVE_AHEAD to ACTIVE_BEHIND along it), and
+  asleep again where it lies; a tile leaving the window writes its loose rocks' poses back.
+
+The stage's cost grows with its prims, not their triangles (8531 rock prims took 16 ms a frame
+in rock_field.py; the window holds about 200). Each streamed collider is put in its collision
+group by its own path: a prim made after the simulation started is not in a group through
+its parent's (issue 030). Rocks collide with the world's ground as they do with everything:
+a loose one is placed only where the detail is no more than rocks.LOOSE_BELOW under the base
+(`rocks.place`), so it rests where the surface is.
+"""
+import math
+import time
+
+import numpy as np
+
+from . import rocks as rk
+
+COLLISION_REACH = 48.0  # m around a vehicle with collision tiles
+COLLISION_STEP = 2  # every second 5 cm sample: 10 cm (p99 2.5 mm from the tire's height)
+ROCK_REACH = 48.0  # m around a vehicle with rock prims
+ACTIVE_AHEAD, ACTIVE_BEHIND, ACTIVE_SIDE = 30.0, 5.0, 2.5
+PRIMS_PER_FRAME = 4  # rock prims made a frame at most: a tile's at once took 11 ms
+MAX_DEPENETRATION = 1.0  # m/s
+# a loose rock has its own rigid body only within this of the carriageway's and shoulder's
+# edge, where a car on the road reaches it; beyond (ditch, backslope) it is part of the
+# tile's static collider: a car out there has left the road (about 70 % of the rocks lie
+# there, and each body is a prim: 543 of them took 7 ms a frame)
+BAND_MARGIN = 0.5  # m
+ROOT = "/World/RoadRocks"
+COLL_ROOT = "/World/RoadCollision"
+
+
+class RockStream:
+    def __init__(self, stage, layer, physx, ground=(), groups="/World/vehicleCollisionGroups"):
+        """`ground`: the world's own road ground (the base's prims, `road_detail.yaml`'s), which
+        the rocks then do not collide with: a loose rock rests on the collision tiles, the
+        true surface, not on the base above a rut or a crowned road's sides."""
+        from pxr import Sdf, UsdGeom, UsdPhysics, Vt
+
+        self.stage, self.layer, self.physx = stage, layer, physx
+        self.rock_g, self.detail_g = f"{groups}/rocks", f"{groups}/roadDetail"
+        base_g = f"{groups}/roadBase"
+        for g in (self.rock_g, self.detail_g):
+            UsdPhysics.CollisionGroup.Define(stage, g).CreateFilteredGroupsRel().AddTarget(
+                f"{groups}/groundQuery")
+            UsdPhysics.CollisionGroup.Get(stage, g).GetCollidersCollectionAPI() \
+                .CreateIncludesRel()
+        if ground:
+            UsdPhysics.CollisionGroup.Define(stage, base_g).GetCollidersCollectionAPI() \
+                .CreateIncludesRel().SetTargets([Sdf.Path(p) for p in ground])
+            UsdPhysics.CollisionGroup.Get(stage, self.rock_g).GetFilteredGroupsRel() \
+                .AddTarget(base_g)
+        mat = UsdPhysics.MaterialAPI.Apply(UsdGeom.Scope.Define(stage, f"{ROOT}/material")
+                                           .GetPrim())
+        mat.CreateStaticFrictionAttr(0.7)  # rock on gravel and on steel, about 0.6-0.8
+        mat.CreateDynamicFrictionAttr(0.6)
+        mat.CreateRestitutionAttr(0.1)
+        d = layer.detail
+        self.n_c = d.n // COLLISION_STEP
+        a = (np.arange(self.n_c)[None, :] + (self.n_c + 1) * np.arange(self.n_c)[:, None]).ravel()
+        self.coll_idx = Vt.IntArray.FromNumpy(
+            np.stack([a, a + 1, a + self.n_c + 2, a + self.n_c + 1], axis=1).ravel()
+            .astype(np.int32))
+        self.coll_cnt = Vt.IntArray.FromNumpy(np.full(self.n_c * self.n_c, 4, np.int32))
+        self.coll = {}  # tile -> prim path
+        self.loaded = {}  # tile -> its rocks' indices in layer.rocks
+        self.win = {}  # tile -> its static rocks' prim path (or None)
+        self.paths, self.dyn, self.mass = [], [], []  # per rock
+        self.ints = {}
+        self.active = {}  # rock -> awake
+        self.vel = {}  # rock -> its velocity over the last read, world
+        self.read_at = {}  # rock -> the read count of its last read
+        self.reads = 0
+        self.queue = []
+        self.coll_ms, self.prim_ms = [], []
+
+    # --- the stage ---------------------------------------------------------------------------
+
+    def _group(self, group, path, on):
+        from pxr import UsdPhysics
+
+        rel = UsdPhysics.CollisionGroup.Get(self.stage, group).GetCollidersCollectionAPI() \
+            .GetIncludesRel()
+        (rel.AddTarget if on else rel.RemoveTarget)(path)
+
+    def _mesh(self, path, pts, idx, cnt, collision):
+        from pxr import UsdGeom, UsdPhysics, Vt
+
+        m = UsdGeom.Mesh.Define(self.stage, path)
+        m.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(pts.astype(np.float32)))
+        m.CreateFaceVertexIndicesAttr(idx)
+        m.CreateFaceVertexCountsAttr(cnt)
+        UsdPhysics.CollisionAPI.Apply(m.GetPrim())
+        UsdPhysics.MeshCollisionAPI.Apply(m.GetPrim()).CreateApproximationAttr(collision)
+        return m
+
+    def update(self, points):
+        """Once a frame: `points` the vehicles' (x, y, yaw) in the world."""
+        d, ox, oy = self.layer.detail, self.layer.ox, self.layer.oy
+        xs = [p[0] + ox for p in points]
+        ys = [p[1] + oy for p in points]
+        # collision tiles
+        want = {k for k in d.tiles_near(xs, ys, COLLISION_REACH)
+                if d.touches(*k) and d.ready(k)} if points else set()
+        for k in [k for k in self.coll if k not in want]:
+            path = self.coll.pop(k)
+            self.stage.RemovePrim(path)
+            self._group(self.detail_g, path, False)
+        for k in want - set(self.coll):
+            t0 = time.perf_counter()
+            from pxr import UsdGeom
+
+            i, j = k
+            h = d.surface_tile(i, j)[::COLLISION_STEP, ::COLLISION_STEP]
+            s = d.spacing * COLLISION_STEP
+            gx, gy = np.meshgrid(i * d.tile + np.arange(self.n_c + 1) * s - ox,
+                                 j * d.tile + np.arange(self.n_c + 1) * s - oy)
+            path = f"{COLL_ROOT}/t_{i}_{j}".replace("-", "m")
+            m = self._mesh(path, np.stack([gx, gy, h], axis=-1).reshape(-1, 3), self.coll_idx,
+                           self.coll_cnt, "none")
+            m.CreateVisibilityAttr(UsdGeom.Tokens.invisible)  # MeshStream's is the render
+            self._group(self.detail_g, path, True)
+            self.coll[k] = path
+            self.coll_ms.append((time.perf_counter() - t0) * 1e3)
+        self._stream_rocks(xs, ys, points)
+        self._activate(points)
+
+    def _stream_rocks(self, xs, ys, points):
+        from pxr import Vt
+
+        d = self.layer.detail
+        want = {k for k in d.tiles_near(xs, ys, ROCK_REACH)
+                if k in self.coll and d.extra(*k) is not None} if points else set()
+        rs = self.layer.rocks
+        for k in [k for k in self.win if k not in want]:
+            for i in self.loaded[k]:
+                if self.paths[i] is not None:
+                    if self.active.get(i):
+                        self.read(i)  # write-back: the data keeps where it lies
+                        self.active[i] = False
+                    self.stage.RemovePrim(self.paths[i])
+                    self._group(self.rock_g, self.paths[i], False)
+                    self.paths[i] = None
+            if self.win[k]:
+                self.stage.RemovePrim(self.win[k])
+                self._group(self.rock_g, self.win[k], False)
+            del self.win[k]
+        for k in want - set(self.win):
+            t0 = time.perf_counter()
+            if k not in self.loaded:
+                self._load(k)
+            ids = self.loaded[k]
+            statics = [(rs.rocks[i], rs.pos[i], 0.0, False) for i in ids if not self.dyn[i]]
+            path = None
+            if statics:
+                v, f = rk.merged(statics)
+                path = f"{ROOT}/s_{k[0]}_{k[1]}".replace("-", "m")
+                self._mesh(path, v, Vt.IntArray.FromNumpy(f.ravel().astype(np.int32)),
+                           Vt.IntArray.FromNumpy(np.full(len(f), 3, np.int32)), "none")
+                self._group(self.rock_g, path, True)
+            self.win[k] = path
+            self.queue.extend(i for i in ids if self.dyn[i])
+            self.prim_ms.append((time.perf_counter() - t0) * 1e3)
+        made = 0
+        while self.queue and made < PRIMS_PER_FRAME:
+            i = self.queue.pop(0)
+            if self.paths[i] is None and any(i in self.loaded[k] for k in self.win):
+                self._rock_prim(i)
+                made += 1
+
+    def _in_band(self, p):
+        """Whether map point p lies on a corridor's carriageway or shoulder (+ BAND_MARGIN)."""
+        for c in self.layer.detail.corridors:
+            _, v, near = c.uv(np.array([p[0]]), np.array([p[1]]))
+            if near[0] and abs(v[0]) <= c.section.half_width + c.section.shoulder + BAND_MARGIN:
+                return True
+        return False
+
+    def _load(self, k):
+        """The tile's rocks into the data, once, in the world frame; a loose one beyond the
+        band a car on the road reaches is held, in the tile's static collider."""
+        entries = [(r, p, yaw, dyn and self._in_band(p))
+                   for r, p, yaw, dyn in (self.layer.detail.extra(*k) or [])]
+        off = np.array([self.layer.ox, self.layer.oy, 0.0])
+        n0 = len(self.paths)
+        self.layer.rocks.add([r for r, *_ in entries], [p - off for _, p, _, _ in entries],
+                             [(1.0, 0.0, 0.0, 0.0)] * len(entries))
+        self.paths.extend([None] * len(entries))
+        self.dyn.extend([bool(dy) for *_, dy in entries])
+        self.mass.extend([r.mass for r, *_ in entries])
+        self.loaded[k] = list(range(n0, n0 + len(entries)))
+
+    def _rock_prim(self, i):
+        """Loose rock i's own prim, a rigid body asleep (static) at its present pose."""
+        from pxr import Gf, PhysicsSchemaTools, PhysxSchema, UsdPhysics, Vt
+
+        rs = self.layer.rocks
+        r = rs.rocks[i]
+        path = f"{ROOT}/r{i}"
+        m = self._mesh(path, r.verts, Vt.IntArray.FromNumpy(r.faces.ravel().astype(np.int32)),
+                       Vt.IntArray.FromNumpy(np.full(len(r.faces), 3, np.int32)),
+                       "convexHull")
+        m.AddTranslateOp().Set(Gf.Vec3d(*map(float, rs.pos[i])))
+        m.AddOrientOp().Set(Gf.Quatf(*map(float, rs.quat[i])))
+        rb = UsdPhysics.RigidBodyAPI.Apply(m.GetPrim())
+        rb.CreateRigidBodyEnabledAttr(False)  # asleep: a static collider, no pose sync
+        UsdPhysics.MassAPI.Apply(m.GetPrim()).CreateDensityAttr(rk.DENSITY)
+        prb = PhysxSchema.PhysxRigidBodyAPI.Apply(m.GetPrim())
+        prb.CreateEnableSpeculativeCCDAttr(True)
+        # out of an overlap (the surface's mm, a neighbour) at a walk, not PhysX's default
+        # (a stone thrown at tens of m/s as it woke)
+        prb.CreateMaxDepenetrationVelocityAttr(MAX_DEPENETRATION)
+        self._group(self.rock_g, path, True)
+        self.paths[i] = path
+        self.ints[i] = PhysicsSchemaTools.sdfPathToInt(path)
+
+    # --- awake and asleep --------------------------------------------------------------------
+
+    def _sleep(self, i, on):
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        prim = self.stage.GetPrimAtPath(self.paths[i])
+        if on:  # where it lies, then static
+            rs = self.layer.rocks
+            ops = UsdGeom.Xformable(prim).GetOrderedXformOps()
+            ops[0].Set(Gf.Vec3d(*map(float, rs.pos[i])))
+            ops[1].Set(Gf.Quatf(*map(float, rs.quat[i])))
+        UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(not on)
+
+    def _activate(self, points):
+        """Each rock with a prim awake while a vehicle can touch it: one array pass over the
+        window's rocks, a USD write only for those that change."""
+        rs = self.layer.rocks
+        ids = np.array([i for k in self.win for i in self.loaded[k] if self.paths[i] is not None],
+                       dtype=int)
+        if not ids.size:
+            return
+        near = np.zeros(ids.size, dtype=bool)
+        px, py = rs.pos[ids, 0], rs.pos[ids, 1]
+        for x, y, yaw in points:
+            c, s = math.cos(yaw), math.sin(yaw)
+            along = (px - x) * c + (py - y) * s
+            across = -(px - x) * s + (py - y) * c
+            near |= (along > -ACTIVE_BEHIND) & (along < ACTIVE_AHEAD + 3.0) \
+                & (np.abs(across) < ACTIVE_SIDE)
+        for i, n in zip(ids.tolist(), near.tolist()):
+            a = self.active.get(i, False)
+            if n and not a:
+                self._sleep(i, False)
+                self.active[i] = True
+            elif a and not n:
+                self.read(i)
+                self._sleep(i, True)
+                self.active[i] = False
+
+    def awake(self):
+        return sum(1 for v in self.active.values() if v)
+
+    # --- PhysX ---------------------------------------------------------------------------------
+
+    def read(self, i, dt=None):
+        """Rock i's pose from PhysX into the data (and its velocity over dt, when its last read
+        was the step before; otherwise none yet)."""
+        t = self.physx.get_rigidbody_transformation(self.paths[i])
+        if not t or "rotation" not in t:  # not in PhysX yet (just made or woken)
+            self.vel[i] = np.zeros(3)
+            return False
+        x, y, z, w = t["rotation"]  # PhysX's (x, y, z, w)
+        pos = np.array(tuple(t["position"]))
+        if dt:
+            if self.read_at.get(i) == self.reads - 1:
+                self.vel[i] = (pos - self.layer.rocks.pos[i]) / dt
+            else:
+                self.vel[i] = np.zeros(3)
+            self.read_at[i] = self.reads
+        self.layer.rocks.set_pose(i, tuple(pos), (w, x, y, z))
+        return True
+
+    def read_near(self, xy, road, dt):
+        """Before a vehicle's contact: the awake rocks near its wheels from PhysX, and whether
+        each rests on the road (one off the ground holds no tire up)."""
+        rs = self.layer.rocks
+        rs.seen[:] = True
+        self.reads += 1
+        for i in rs.near(xy[:, 0], xy[:, 1], margin=1.0):
+            if self.active.get(i) and self.read(i, dt):
+                rs.rest(i, road)
+
+    def push(self, forces, speed, radius, road, dt, apply_force):
+        """The tires' reactions on the awake rocks (`rocks.reactions`), each no faster than the
+        tire surface pushing it; returns the scale the car's lateral is to take."""
+        sc_all = 1.0
+        for i, fs in forces.items():
+            if not self.active.get(i):
+                continue
+            zc = max(p[2] - float(np.asarray(road(np.array([p[0]]), np.array([p[1]])))[0])
+                     for _, p in fs)
+            fs, sc = rk.limit(fs, self.mass[i], self.vel.get(i, np.zeros(3)),
+                              abs(speed) * max(zc, 0.0) / radius, dt)
+            sc_all = min(sc_all, sc)
+            for f, p in fs:
+                apply_force(self.paths[i], tuple(float(v) for v in f),
+                            tuple(float(v) for v in p))
+        return sc_all
+
+    def remove(self):
+        for path in list(self.coll.values()) + [p for p in self.paths if p] + \
+                [p for p in self.win.values() if p]:
+            self.stage.RemovePrim(path)
+        self.coll.clear()
+        self.win.clear()
+        self.paths = [None] * len(self.paths)
+        self.active.clear()

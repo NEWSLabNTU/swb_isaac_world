@@ -70,7 +70,7 @@ answers `Hello`.
 
 | Path | What |
 |---|---|
-| `swb_isaac_world/` | The Python package: the world server (`world_server`, `world`), motion, catalogue and vehicle assets, walkers and riders, signals, sky, surfaces and soil, the road's small-scale detail and the tire's contact with it (`road_detail`, `road_contact`, `road_layer`: a `road_detail.yaml` beside a map's `surfaces.yaml`, roadmap 066), USD and point-cloud worlds |
+| `swb_isaac_world/` | The Python package: the world server (`world_server`, `world`), motion, catalogue and vehicle assets, walkers and riders, signals, sky, surfaces and soil, the road's small-scale detail and the tire's contact with it (`road_detail`, `road_contact`, `road_layer`: a `road_detail.yaml` beside a map's `surfaces.yaml`, roadmap 066) and its rocks (`rocks`, `rock_layer`), USD and point-cloud worlds |
 | `launch/`, `scripts/swb_isaac_world_server.in` | The launch file and the launch node wrapper (drops the system ROS environment, sources Isaac's) |
 | `scripts/` | Isaac install and environment, Autoware's messages for Isaac (`build_msgs.sh`), CARLA town and vehicle, walker and prop export to USD (`isaac_town.sh`, `isaac_vehicles.sh`), step responses against CARLA (`step_response/`) |
 | `config/surface_classes.yaml` | Road and off-road surface classes |

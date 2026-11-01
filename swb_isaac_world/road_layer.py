@@ -22,6 +22,13 @@ match, so PhysX's rigid limit lies beyond the corner's bump stop (R2).
         potholes: {per_100m: 2}
         washboard: [{u0: 120, u1: 180, pitch: 0.5}]
         water_bars: {at: [40, 95]}
+        rocks: {shoulder: 0.01, ditch: 0.03}   # rocks.Zones: Golombek-Rapp cover k (R4)
+    ground: [/World/Town/Road]        # the base's prims, filtered out for the rocks (R4)
+
+With `rocks`, the corridor's rocks are placed per tile in the tile worker and the tire stands on
+them (`rocks.RockSet`, `layer.rocks`); their prims, collision tiles and sleep are
+`rock_layer.RockStream`'s, which the world attaches as `layer.rock_stream`. A loose rock under
+a tire takes its share of the tire's force, reversed, and the car the lateral reversed (R4).
 """
 import dataclasses
 import logging
@@ -31,6 +38,7 @@ import numpy as np
 
 from . import road_contact as rc
 from . import road_detail as rd
+from . import rocks as rk
 
 log = logging.getLogger("swb_isaac_world")
 
@@ -51,11 +59,15 @@ def parse(data, where=FILE):
     """The corridors of a road_detail.yaml's contents; RoadDetailError lists every problem."""
     problems = []
     kinds = {"roughness": rd.Roughness, "section": rd.Section, "ruts": rd.Ruts,
-             "potholes": rd.Potholes, "water_bars": rd.WaterBars}
+             "potholes": rd.Potholes, "water_bars": rd.WaterBars, "rocks": rk.Zones}
     out = []
-    unknown = set(data or {}) - {"corridors"}
+    unknown = set(data or {}) - {"corridors", "ground"}
     if unknown:
-        problems.append(f"{where}: unknown key(s) {sorted(unknown)} (corridors)")
+        problems.append(f"{where}: unknown key(s) {sorted(unknown)} (corridors, ground)")
+    ground = (data or {}).get("ground") or []
+    if not isinstance(ground, list) or not all(isinstance(g, str) for g in ground):
+        problems.append(f"{where}: ground must be a list of prim paths")
+        ground = []
     for k, c in enumerate((data or {}).get("corridors") or []):
         at = f"{where}: corridors[{k}]"
         args = {}
@@ -77,6 +89,8 @@ def parse(data, where=FILE):
                 continue
             if "at" in given:
                 given = dict(given, at=tuple(given["at"]))
+            if "embed" in given:
+                given = dict(given, embed=tuple(given["embed"]))
             args[name] = cls(**given)
         zones = []
         for z in c.get("washboard") or []:
@@ -88,6 +102,10 @@ def parse(data, where=FILE):
                 and not args["roughness"].gd0:
             problems.append(f"{at}.roughness: class {args['roughness'].cls} is not ISO 8608's "
                             f"A-H")
+        if "rocks" in args and not ground:
+            # the world's ground not filtered out for the rocks: loose ones only where it
+            # does not hold them over the true surface (rocks.place)
+            args["rocks"] = dataclasses.replace(args["rocks"], loose_below=rk.LOOSE_BELOW)
         out.append(rd.Corridor(line, seed=int(c.get("seed", k)), washboard=tuple(zones), **args))
     if problems:
         raise RoadDetailError("\n".join(problems))
@@ -101,6 +119,15 @@ def load(path):
         return parse(yaml.safe_load(f) or {}, str(path))
 
 
+def load_ground(path):
+    """road_detail.yaml's `ground`: the prims of the world's own road ground (the base), which
+    the rocks do not collide with, so a loose rock rests on the detail's collision tiles."""
+    import yaml
+
+    with open(path) as f:
+        return list((yaml.safe_load(f) or {}).get("ground") or [])
+
+
 def vehicle_params(p):
     """aib VehicleParams `p` with PhysX's travel PX_EXTRA longer (its frame rises with it)."""
     return dataclasses.replace(p, suspension_travel=p.suspension_travel + PX_EXTRA)
@@ -109,8 +136,14 @@ def vehicle_params(p):
 class RoadLayer:
     def __init__(self, corridors, origin=(0.0, 0.0, 0.0), apply_force=None, workers=1):
         """`origin`: the world frame's origin in the map's (`SurfaceLayer.origin`)."""
+        corridors = list(corridors)
+        with_rocks = any(c.rocks is not None for c in corridors)
         self.detail = rd.Detail(corridors, workers=workers, max_tiles=96,
-                                processes=bool(workers))
+                                processes=bool(workers),
+                                extras="swb_isaac_world.rocks:place" if with_rocks else None)
+        # the rocks the tires stand on, world frame; filled by the world's rock_stream
+        self.rocks = rk.RockSet([], np.zeros((0, 3)), np.zeros((0, 4))) if with_rocks else None
+        self.rock_stream = None
         self.ox, self.oy = float(origin[0]), float(origin[1])
         self.apply_force = apply_force
         self.cars = {}  # vehicle path -> _Car
@@ -233,9 +266,24 @@ class _Car:
             c = cs.reshape((WHEELS,) + (1,) * (x.ndim - 1))
             return ga * x + gb * y + c
 
-        def height(x, y):
+        def road(x, y):
             return base(x, y) + layer.height(x, y)
 
+        def road_at(k):  # wheel k's road at any points
+            return lambda x, y: ga * np.asarray(x) + gb * np.asarray(y) + cs[k] \
+                + layer.height(x, y)
+
+        def road_any(x, y):  # the wheels' mean plane, within mm of each wheel's
+            return ga * np.asarray(x) + gb * np.asarray(y) + float(np.mean(cs)) \
+                + layer.height(x, y)
+
+        rocks, stream = layer.rocks, layer.rock_stream
+        zu0 = self.contact.zu.copy()
+        if rocks is not None and stream is not None:
+            stream.read_near(xy, road_any, dt)  # the awake rocks where PhysX has them
+            height = rocks.height(road)
+        else:
+            rocks, height = None, road
         o = self.contact.step(dt, height, base, xy, heading, speed, z_att, v_att)
         self.scale = self.contact.friction_scale(o["load"], o["px_load"])
         self.last_out = o
@@ -245,6 +293,19 @@ class _Car:
             cz = pz + att[i][2] - self.frame_z + p.wheel_radius
             out.append(((float(o["dfx"][i] * heading[i, 0]), float(o["dfx"][i] * heading[i, 1]),
                          float(o["dfz"][i])), (float(xy[i, 0]), float(xy[i, 1]), cz)))
+        if rocks is not None and len(rocks.rocks):
+            sh = rocks.shares([road_at(k) for k in range(WHEELS)], xy, heading,
+                              self.contact.width, self.contact.r, zu0)
+            forces, lat = rk.reactions(sh, o["load"], heading)
+            if forces and layer.apply_force is not None:
+                sc = stream.push(forces, speed[0], p.wheel_radius, road_any, dt,
+                                 layer.apply_force)
+                lat = lat * sc  # the car feels only what the rocks took
+            for i in range(WHEELS):  # the rocks' lateral push on the tire (the cam has none)
+                if lat[i].any():
+                    cz = pz + att[i][2] - self.frame_z
+                    out.append(((float(lat[i][0]), float(lat[i][1]), 0.0),
+                                (float(xy[i, 0]), float(xy[i, 1]), cz)))
         return out
 
 

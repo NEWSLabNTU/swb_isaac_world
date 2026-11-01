@@ -121,8 +121,10 @@ class SurfaceLayer:
         self.saved = True  # nothing driven since the last save
         self.road = None  # road_layer.RoadLayer, with `road_meshes` its render mesh
         self.road_meshes = None
+        self.road_rocks = None  # rock_layer.RockStream: the road's rocks' prims (R4)
         self.mu = {}  # (vehicle path, wheel) -> the friction the surface gives, before the road's
         self.near = []  # the egos' positions at the last place, for the road's meshes
+        self.near_pose = []  # and their (x, y, yaw), for the road's rocks
         if make_tiles is not None:
             for z in surface_map.zones:
                 if z.ground_z is not None:
@@ -208,6 +210,8 @@ class SurfaceLayer:
         if self.road is not None:
             self.road.before_substep(vehicles, dt)
             self.near = [v.last[0] for v in vehicles if v.last is not None]
+            self.near_pose = [(p[0], p[1], _yaw(q)) for (p, q, _) in
+                              (v.last for v in vehicles if v.last is not None)]
             for v in vehicles:
                 for i in range(len(v.wheel_paths)):
                     mu = self.mu.get((v.path, i))
@@ -409,6 +413,8 @@ class SurfaceLayer:
         out = {}
         if self.road_meshes is not None:
             self.road_meshes.update(self.near)
+        if self.road_rocks is not None:
+            self.road_rocks.update(self.near_pose)
         wheels = list(self.soil_xy.values())
         for zid, tiles in self.tiles.items():
             grid = self.grids.get(zid)
@@ -425,6 +431,8 @@ class SurfaceLayer:
         self.tiles = {}
         if self.road_meshes is not None:
             self.road_meshes.remove()
+        if self.road_rocks is not None:
+            self.road_rocks.remove()
         if self.road is not None:
             self.road.close()
 
@@ -522,3 +530,9 @@ def register(world_files):
                 raise surfaces.SurfaceError(str(e)) from e
         out[os.path.realpath(usd)] = (str(path), tuple(w.get("map_origin") or (0.0, 0.0, 0.0)))
     return out
+
+
+def _yaw(q):
+    """The heading of a (w, x, y, z) quaternion, rad."""
+    w, x, y, z = q
+    return math.atan2(2 * (w * z + x * y), 1 - 2 * (y * y + z * z))

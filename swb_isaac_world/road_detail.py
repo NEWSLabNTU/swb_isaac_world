@@ -188,6 +188,7 @@ class Corridor:
     washboard: tuple = ()
     water_bars: WaterBars = None
     grade: object = None
+    rocks: object = None  # rocks.Zones: the rock cover by zone (R4); None: no rocks
 
     def __post_init__(self):
         line = np.asarray(self.centreline, dtype=float)

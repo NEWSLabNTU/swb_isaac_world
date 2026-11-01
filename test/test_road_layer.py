@@ -102,3 +102,42 @@ class Layer(unittest.TestCase):
         self.assertGreater(min(fz[2], fz[3]), 1000.0)  # rear: tens of mm of extra compression
         self.assertLess(max(abs(fz[0]), abs(fz[1])), 100.0)
         layer.close()
+
+    def test_a_rock_under_a_wheel_lifts_it_and_is_pushed(self):
+        """The rocks with the layer as the world runs it: a stand-in stream (no USD) and one
+        loose rock under the rear left wheel."""
+        from swb_isaac_world import rocks as rk
+
+        c = road_layer.parse({"corridors": [{"centreline": [[0, 0], [200, 0]],
+                                             "roughness": {"gd0": 1e-14},
+                                             "section": {"crown": 0.0},
+                                             "rocks": {"carriageway": 0.0, "shoulder": 0.0,
+                                                       "ditch": 0.0}}]})
+        self.assertIsInstance(c[0].rocks, rk.Zones)
+        forces = []
+        layer = road_layer.RoadLayer(c, apply_force=lambda *a: forces.append(a), workers=0)
+        self.assertIsNotNone(layer.rocks)
+        rock = rk.make_rock(np.random.default_rng(1), 0.12, rough=0.0)
+        layer.rocks.add([rock], [(10.0, 0.83, -rock.verts[:, 2].min())], [(1, 0, 0, 0)])
+        pushed = []
+
+        class Stream:  # the part of rock_layer.RockStream the car step uses
+            def read_near(self, xy, road, dt):
+                layer.rocks.seen[:] = True
+
+            def push(self, forces_, speed, radius, road, dt, apply_force):
+                pushed.append(forces_)
+                return 1.0
+
+        layer.rock_stream = Stream()
+        v = self.car(x=10.0)  # the rear left wheel on the rock
+        for _ in range(30):
+            forces.clear()
+            layer.before_substep([v], DT)
+        fz = [f[1][2] for f in forces[:4]]
+        self.assertGreater(fz[2], 500.0)  # rear left lifted by the 6 cm rock
+        self.assertLess(abs(fz[0]), 150.0)
+        self.assertTrue(pushed and 0 in pushed[-1])  # and the rock takes its reaction
+        f = sum(ff for ff, _ in pushed[-1][0])
+        self.assertLess(f[2], -1000.0)  # pressed down by the tire
+        layer.close()

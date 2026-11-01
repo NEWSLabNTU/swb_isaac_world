@@ -316,8 +316,15 @@ class IsaacWorld(WorldBase):
         layer = self.surface
         layer.road = road_layer.RoadLayer(road_layer.load(path), origin, self._apply_force)
         layer.road_meshes = road_layer.MeshStream(self.stage, layer.road)
-        log.info("road detail %s: %d corridor(s); the egos' tire contact is the road layer's",
-                 path, len(layer.road.detail.corridors))
+        if layer.road.rocks is not None:  # 066 R4: the corridors' rocks, streamed
+            from . import rock_layer
+
+            layer.road_rocks = layer.road.rock_stream = rock_layer.RockStream(
+                self.stage, layer.road, self.physx,
+                ground=road_layer.load_ground(path) or list(self.ground))
+        log.info("road detail %s: %d corridor(s)%s; the egos' tire contact is the road layer's",
+                 path, len(layer.road.detail.corridors),
+                 ", with rocks" if layer.road.rocks is not None else "")
 
     def _settle_cut(self, steps=10):
         """A few physics steps of their own for a soil zone's cut (collision switched off on

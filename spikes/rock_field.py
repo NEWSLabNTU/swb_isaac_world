@@ -114,7 +114,8 @@ corridor = rd.Corridor(
     np.array([[0.0, 0.0], [x1, 0.0]]), seed=66, roughness=rd.Roughness(cls="C"),
     ruts=rd.Ruts(offset=0.83), potholes=rd.Potholes(),
     washboard=(rd.Washboard(X_START + 600.0, X_START + 700.0, pitch=0.5),),
-    water_bars=rd.WaterBars(at=(X_START + 1500.0, X_START + 1550.0, X_START + 1600.0)))
+    water_bars=rd.WaterBars(at=(X_START + 1500.0, X_START + 1550.0, X_START + 1600.0)),
+    rocks=rk.Zones() if ROCKS_ON else None)
 detail = rd.Detail([corridor], max_tiles=96, workers=1, processes=True,
                    extras="swb_isaac_world.rocks:place" if ROCKS_ON else None)
 
@@ -390,6 +391,7 @@ def awake_n():
 z_att_prev = [None]
 stats = {"under_tire": set(), "push_max": 0.0, "rock_v_max": 0.0, "read_ms": []}
 contact_ms = []
+PARTS = []  # per frame, the frame's parts, ms
 TRACE = []  # per substep, the last 20000-40000
 CONTACTS = []  # (x of the car, the other actor, the collider of ours, impulse N s, point, z)
 
@@ -512,6 +514,7 @@ def run(kmh):
         activate(x)
         substep()
     frames, awake, prims, n0 = [], [], [], len(contact_ms)
+    PARTS.clear()
     left = stuck = None
     slow = 0.0
     CONTACTS.clear()
@@ -527,11 +530,17 @@ def run(kmh):
         if slow > 5.0:
             stuck = [round(float(c), 2) for c in state.position]
             break
+        tp = [time.perf_counter()]
         prefetch(x, v)
+        tp.append(time.perf_counter())
         meshes.update([(x, 0.0)])
+        tp.append(time.perf_counter())
         stream_collision(x)
+        tp.append(time.perf_counter())
         stream_rocks(x)
+        tp.append(time.perf_counter())
         activate(x)
+        tp.append(time.perf_counter())
         cmd.velocity = v
         cmd.acceleration = max(-3.0, min(3.0, 1.5 * (v - state.velocity[0])))
         fwd = qrot(state.quat, (1.0, 0.0, 0.0))
@@ -539,10 +548,16 @@ def run(kmh):
         vs = max(v, 1.0)
         cmd.tire_angle = max(-0.05, min(0.05, -vp.wheel_base * (
             W_LAT ** 2 * state.position[1] / vs ** 2 + 2 * Z_LAT * W_LAT * yaw / vs)))
+        n_c0 = len(contact_ms)
         for _ in range(SUB):
             substep()
+        tp.append(time.perf_counter())
         if x > RUN_FROM + 40.0:
             frames.append((time.perf_counter() - t0) * 1e3)
+            # per frame: prefetch, render mesh, collision tiles, rock prims, activation,
+            # the three substeps (contact included), the contact alone
+            PARTS.append([(b - a) * 1e3 for a, b in zip(tp, tp[1:])]
+                         + [sum(contact_ms[n_c0:])])
             awake.append(awake_n())
             prims.append(sum(p is not None for p in PATHS) + sum(1 for v in WIN.values() if v))
         if len(frames) % 400 == 1:
@@ -563,6 +578,7 @@ def run(kmh):
     cm = np.array(contact_ms[n0:]) if len(contact_ms) > n0 else np.zeros(1)
     rm = np.array(stats["read_ms"]) if stats["read_ms"] else np.zeros(1)
     np.save(os.path.join(OUT, f"frame_ms_{kmh:g}.npy"), f)
+    np.save(os.path.join(OUT, f"parts_{kmh:g}.npy"), np.array(PARTS))
     return {"kmh": kmh, "frame_ms": {"p50": round(float(np.median(f)), 2),
                                      "p95": round(float(np.percentile(f, 95)), 2),
                                      "max": round(float(f.max()), 1),

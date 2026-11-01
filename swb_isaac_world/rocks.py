@@ -203,7 +203,7 @@ class RockSet:
     def shares(self, road, xy, heading, width, radius, zu, along=13, across=6):
         """Each tire's contact with the rocks, as a bed of radial springs over the footprint
         (along: -0.6 to 0.6 radius, the front and rear of a tire climbing a rock; across: the
-        width). Each sample's depth into the tire, max(0, surface - the tire's undeformed
+        width); `road` one function for all, or one per tire. Each sample's depth into the tire, max(0, surface - the tire's undeformed
         bottom there), goes to whichever surface is highest there.
 
         Returns per tire a list of (rock, share, gradient along, gradient across, point):
@@ -224,7 +224,8 @@ class RockSet:
                 out.append([])
                 continue
             bottom = float(zu[k]) - np.sqrt(np.maximum(r * r - uu * uu, 0.0))
-            g = np.asarray(road(px, py), dtype=float)
+            g = np.asarray((road[k] if isinstance(road, (list, tuple)) else road)(px, py),
+                           dtype=float)
             t, idx, n = self.top(px, py, near, normals=True)
             rock = t > g
             depth = np.maximum(np.where(rock, t, g) - bottom, 0.0)
@@ -289,8 +290,9 @@ def limit(forces, mass, v_rock, v_push, dt):
 D_MIN = 0.09  # m, plan diameter of the smallest rock placed (about 1 kg); smaller is gravel,
 # a surface class (047's soil), not a body
 D_MAX = 1.5  # m
-DYNAMIC_MAX_KG = 50.0  # heavier rocks are static: no car moves them
-EMBED_LOOSE = 0.15  # a rock sunk deeper than this share of its height is held: static
+DYNAMIC_MAX_KG = 50.0  # heavier rocks are static, sunk: no car moves them
+# lighter ones are loose whatever their embedding: gravel does not hold a 1 kg stone against
+# a 1.9 t car's underbody (a held one stopped the car by 10 kN s in rock_world.py)
 
 
 @dataclass
@@ -303,13 +305,28 @@ class Zones:
     shoulder: float = 0.01
     ditch: float = 0.03
     embed: tuple = (0.0, 0.4)  # the share of a rock's height below the surface, uniform
+    # the carriageway is graded (assumed): a rock held in it stands at most this proud, m,
+    # sunk deeper where it would stand more; and a rock lying on it is at most
+    # carriageway_d_max across (a bigger one fallen on the road is a scenario's hazard)
+    carriageway_protrude: float = 0.05
+    carriageway_d_max: float = 0.30
+    # m: with no ground filtered out for the rocks (`road_detail.yaml`'s `ground`), a loose
+    # rock only where the detail is at most this under the base; None: anywhere
+    loose_below: float = None
+
+    def zone(self, section, v):
+        """The zone at distance v from the centreline: carriageway, shoulder, ditch, or None
+        beyond the section."""
+        a = abs(float(v))
+        if a <= section.half_width:
+            return "carriageway"
+        if a <= section.half_width + section.shoulder:
+            return "shoulder"
+        return "ditch" if a <= section.extent() else None
 
     def k(self, section, v):
-        a = np.abs(v)
-        w = section.half_width
-        return np.where(a <= w, self.carriageway,
-                        np.where(a <= w + section.shoulder, self.shoulder,
-                                 np.where(a <= section.extent(), self.ditch, 0.0)))
+        z = self.zone(section, v)
+        return getattr(self, z) if z else 0.0
 
 
 def golombek_rapp(k, d):
@@ -329,31 +346,55 @@ def _sizes(rng, k, area, n_grid=400):
     return np.interp(rng.uniform(0, cdf[-1], n), cdf, d)
 
 
+LOOSE_BELOW = 0.02  # m: Zones.loose_below when the world's ground is not filtered out
+
+
 def place(detail, i, j, zones=None):
     """The rocks of tile (i, j) of a road_detail.Detail: a list of (Rock, position (3,), yaw,
-    dynamic), each a seeded draw from its corridor and tile, so a tile placed again is the
-    same. A rock rests on the true surface (the detail's height; the base is z 0 here, as the
-    detail is above it), sunk by its embed share; it is dynamic if loose and light."""
-    zones = zones or Zones()
+    dynamic), each a seeded draw from its corridor (its `rocks` Zones, or `zones` for all) and
+    tile, so a tile placed again is the same. A rock rests on the true surface (the base, the
+    corridor's base_z, plus the detail), sunk by its embed share.
+
+    It is dynamic if light (DYNAMIC_MAX_KG), resting on the surface; a heavy one is static,
+    sunk by its embed share. A loose rock rests on the collision tiles, which are the
+    true surface, once the world's own ground is filtered out for the rocks; where it is not
+    (Zones.loose_below set), it would rest on whichever is higher, so in a rut, on a crowned
+    road's sides or in a ditch it would float over the true surface: there a rock is loose
+    only where the detail is no more than loose_below under the base, and static elsewhere."""
     t = detail.tile
     out = []
-    for ci, c in enumerate(detail.corridors):
+    for c in detail.corridors:
+        cz = zones or c.rocks
+        if cz is None:
+            continue
         rng = c._rng(4, i, j)
         for name in ("carriageway", "shoulder", "ditch"):
-            k = getattr(zones, name)
+            k = getattr(cz, name)
             if k <= 0:
                 continue
             for d in _sizes(rng, k, t * t):
                 x, y = (i + rng.uniform()) * t, (j + rng.uniform()) * t
-                _, v, near = c.uv(np.array([x]), np.array([y]))
-                if not near[0] or zones.k(c.section, v)[0] != k:
+                u, v, near = c.uv(np.array([x]), np.array([y]))
+                if not 0.0 < u[0] < c.length:
+                    continue  # beyond the corridor's ends
+                if not near[0] or cz.zone(c.section, v[0]) != name:
                     continue  # another zone's (each zone draws over the whole tile)
                 rock = make_rock(rng, 2 * d / (1 + AXES[1]))
-                embed = rng.uniform(*zones.embed)
-                z = float(detail.height(np.array([x]), np.array([y]))[0]) \
-                    - rock.verts[:, 2].min() - embed * rock.height
-                out.append((rock, np.array([x, y, z]), 0.0,
-                            embed <= EMBED_LOOSE and rock.mass <= DYNAMIC_MAX_KG))
+                embed = rng.uniform(*cz.embed)
+                h = float(detail.height(np.array([x]), np.array([y]))[0])
+                loose = rock.mass <= DYNAMIC_MAX_KG \
+                    and (cz.loose_below is None or h >= -cz.loose_below)
+                sink = embed * rock.height
+                if name == "carriageway":
+                    if loose and d > cz.carriageway_d_max:
+                        continue  # cleared, or a scenario's hazard
+                    if not loose:
+                        sink = max(sink, rock.height - cz.carriageway_protrude)
+                # a loose rock rests on the surface (sunk into the collision tile it would be
+                # thrown out of it when it wakes); a held one is sunk
+                z = float(c.base_z(u)[0]) + h - rock.verts[:, 2].min() \
+                    - (0.0 if loose else sink)
+                out.append((rock, np.array([x, y, z]), 0.0, loose))
     return out
 
 

@@ -136,7 +136,7 @@ class Placement(unittest.TestCase):
         from swb_isaac_world import road_detail as rd
 
         c = rd.Corridor(np.array([[0.0, 0.0], [200.0, 0.0]]), seed=3,
-                        roughness=rd.Roughness(cls="C"))
+                        roughness=rd.Roughness(cls="C"), rocks=rk.Zones())
         return rd.Detail([c], extras="swb_isaac_world.rocks:place", **kw)
 
     def test_a_tile_places_the_same_rocks_again(self):
@@ -159,6 +159,46 @@ class Placement(unittest.TestCase):
             np.testing.assert_allclose(got[0][1], here[0][1])
         finally:
             d.close()
+
+    def test_no_loose_rock_below_the_base(self):
+        from swb_isaac_world import road_detail as rd
+
+        c = rd.Corridor(np.array([[0.0, 0.0], [200.0, 0.0]]), seed=3,
+                        roughness=rd.Roughness(cls="C"),
+                        rocks=rk.Zones(loose_below=rk.LOOSE_BELOW))
+        d = rd.Detail([c])
+        for i in range(0, 12):
+            for j in (-1, 0):
+                for r, p, _, dyn in rk.place(d, i, j):
+                    if dyn:
+                        h = float(d.height(np.array([p[0]]), np.array([p[1]]))[0])
+                        self.assertGreaterEqual(h, -rk.LOOSE_BELOW)
+        none = rd.Detail([rd.Corridor(np.array([[0.0, 0.0], [200.0, 0.0]]), seed=3)])
+        self.assertEqual(rk.place(none, 3, 0), [])  # a corridor without rocks has none
+
+    def test_the_carriageway_is_graded(self):
+        from swb_isaac_world import road_detail as rd
+
+        c = rd.Corridor(np.array([[0.0, 0.0], [400.0, 0.0]]), seed=4,
+                        roughness=rd.Roughness(cls="C"),
+                        rocks=rk.Zones(carriageway=0.03, shoulder=0.03, ditch=0.0))  # the same k
+        d = rd.Detail([c])
+        n = 0
+        for i in range(0, 20):
+            for j in (-1, 0):
+                for r, p, _, dyn in rk.place(d, i, j):
+                    _, v, _ = c.uv(np.array([p[0]]), np.array([p[1]]))
+                    if c.rocks.zone(c.section, v[0]) != "carriageway":
+                        continue  # the shoulder's are not graded
+                    top = p[2] + r.verts[:, 2].max()
+                    h = float(d.height(np.array([p[0]]), np.array([p[1]]))[0])
+                    if dyn:
+                        self.assertLessEqual(max(r.verts[:, 0].ptp(), r.verts[:, 1].ptp()),
+                                             2 * 0.30 / 1.7 * 1.25)
+                    else:
+                        self.assertLessEqual(top - h, 0.05 + 1e-9)
+                    n += 1
+        self.assertGreater(n, 10)
 
     def test_static_rocks_merge(self):
         e = rk.place(self.detail(), 3, 0)
