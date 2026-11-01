@@ -39,6 +39,7 @@ ACTIVE_S, ACTIVE_MIN, ACTIVE_BEHIND, ACTIVE_SIDE = 0.6, 8.0, 3.0, 1.5
 FRONT = 3.0  # m from a vehicle's origin (its rear axle) to its front, about
 PRIMS_PER_FRAME = 4  # rock prims made a frame at most: a tile's at once took 11 ms
 MAX_DEPENETRATION = 1.0  # m/s
+PARK_Z = -1000.0  # m: where a parked rock prim waits for its next rock
 # a loose rock has its own rigid body only within this of the carriageway's and shoulder's
 # edge, where a car on the road reaches it; beyond (ditch, backslope) it is part of the
 # tile's static collider: a car out there has left the road (about 70 % of the rocks lie
@@ -90,6 +91,9 @@ class RockStream:
         self.read_at = {}  # rock -> the read count of its last read
         self.reads = 0
         self.queue = []
+        self.pool = {}  # prototype -> parked prims of it, for the next rock of that shape
+        self.serial = 0
+        self.made, self.reused = 0, 0
         self.coll_ms, self.prim_ms = [], []
 
     # --- the stage ---------------------------------------------------------------------------
@@ -156,9 +160,7 @@ class RockStream:
                     if self.active.get(i):
                         self.read(i)  # write-back: the data keeps where it lies
                         self.active[i] = False
-                    self.stage.RemovePrim(self.paths[i])
-                    self._group(self.rock_g, self.paths[i], False)
-                    self.paths[i] = None
+                    self._release(i)
             if self.win[k]:
                 self.stage.RemovePrim(self.win[k])
                 self._group(self.rock_g, self.win[k], False)
@@ -209,13 +211,49 @@ class RockStream:
         self.mass.extend([r.mass for r, *_ in entries])
         self.loaded[k] = list(range(n0, n0 + len(entries)))
 
+    def _release(self, i):
+        """Rock i's prim off the road: a prototype's parked for the next rock of its shape
+        (collision off, out of the way), others removed. A prim made is a USD change the
+        stage takes in with all its population; moving a parked one is three attributes."""
+        from pxr import Gf, UsdGeom, UsdPhysics
+
+        path, r = self.paths[i], self.layer.rocks.rocks[i]
+        self.paths[i] = None
+        if r.proto is None:
+            self.stage.RemovePrim(path)
+            self._group(self.rock_g, path, False)
+            return
+        prim = self.stage.GetPrimAtPath(path)
+        UsdPhysics.RigidBodyAPI(prim).GetRigidBodyEnabledAttr().Set(False)  # a falling one
+        UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
+        UsdGeom.Imageable(prim).MakeInvisible()
+        UsdGeom.Xformable(prim).GetOrderedXformOps()[0].Set(Gf.Vec3d(0.0, 0.0, PARK_Z))
+        self.pool.setdefault(r.proto, []).append(path)
+
     def _rock_prim(self, i):
-        """Loose rock i's own prim, a rigid body asleep (static) at its present pose."""
-        from pxr import Gf, PhysicsSchemaTools, PhysxSchema, UsdPhysics, Vt
+        """Loose rock i's own prim, a rigid body asleep (static) at its present pose: a parked
+        one of its prototype if there is one, else a new one."""
+        from pxr import Gf, PhysicsSchemaTools, PhysxSchema, UsdGeom, UsdPhysics, Vt
 
         rs = self.layer.rocks
         r = rs.rocks[i]
-        path = f"{ROOT}/r{i}"
+        free = self.pool.get(r.proto) if r.proto is not None else None
+        if free:
+            path = free.pop()
+            prim = self.stage.GetPrimAtPath(path)
+            ops = UsdGeom.Xformable(prim).GetOrderedXformOps()
+            ops[0].Set(Gf.Vec3d(*map(float, rs.pos[i])))
+            ops[1].Set(Gf.Quatf(*map(float, rs.quat[i])))
+            ops[2].Set(Gf.Vec3f(float(r.scale), float(r.scale), float(r.scale)))
+            UsdGeom.Imageable(prim).MakeVisible()
+            UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(True)
+            self.paths[i] = path
+            self.ints[i] = PhysicsSchemaTools.sdfPathToInt(path)
+            self.reused += 1
+            return
+        self.serial += 1
+        self.made += 1
+        path = f"{ROOT}/r{self.serial}"
         # a prototype's rock: its points unscaled and the size as the prim's scale, so PhysX
         # cooks the shape once for every rock of it
         pts = rk.prototypes()[r.proto].verts if r.proto is not None else r.verts
@@ -226,6 +264,7 @@ class RockStream:
         m.AddOrientOp().Set(Gf.Quatf(*map(float, rs.quat[i])))
         if r.proto is not None:
             m.AddScaleOp().Set(Gf.Vec3f(float(r.scale), float(r.scale), float(r.scale)))
+        UsdPhysics.CollisionAPI(m.GetPrim()).CreateCollisionEnabledAttr(True)
         rb = UsdPhysics.RigidBodyAPI.Apply(m.GetPrim())
         rb.CreateRigidBodyEnabledAttr(False)  # asleep: a static collider, no pose sync
         UsdPhysics.MassAPI.Apply(m.GetPrim()).CreateDensityAttr(rk.DENSITY)
@@ -331,8 +370,9 @@ class RockStream:
 
     def remove(self):
         for path in list(self.coll.values()) + [p for p in self.paths if p] + \
-                [p for p in self.win.values() if p]:
+                [p for p in self.win.values() if p] + [p for v in self.pool.values() for p in v]:
             self.stage.RemovePrim(path)
+        self.pool.clear()
         self.coll.clear()
         self.win.clear()
         self.paths = [None] * len(self.paths)

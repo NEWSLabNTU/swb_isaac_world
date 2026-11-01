@@ -304,6 +304,7 @@ def run(kmh):
                     "rock_prims": sum(p is not None for p in rs.paths)
                     + sum(1 for p in rs.win.values() if p),
                     "rock_v_max": round(vmax, 2), "lost": lost,
+                    "prims_made": rs.made, "prims_reused": rs.reused,
                     "rest_gap_mm": rest_gaps(rs)})
     return out
 
