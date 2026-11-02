@@ -40,6 +40,10 @@ FRONT = 3.0  # m from a vehicle's origin (its rear axle) to its front, about
 PRIMS_PER_FRAME = 4  # rock prims made a frame at most: a tile's at once took 11 ms
 MAX_DEPENETRATION = 1.0  # m/s
 PARK_Z = -1000.0  # m: where a parked rock prim waits for its next rock
+# m a frame: a rock leaving the car's path sleeps only once it moved less than this since the
+# last frame (0.2 m/s at 20 Hz). A rock kicked into the air is still flying when the car has
+# passed, and a static collider made of it there hangs in the air, a step the next tire meets.
+SETTLED = 0.01
 # a loose rock has its own rigid body only within this of the carriageway's and shoulder's
 # edge, where a car on the road reaches it; beyond (ditch, backslope) it is part of the
 # tile's static collider: a car out there has left the road (about 70 % of the rocks lie
@@ -87,6 +91,7 @@ class RockStream:
         self.paths, self.dyn, self.mass = [], [], []  # per rock
         self.ints = {}
         self.active = {}  # rock -> awake
+        self.settling = {}  # rock leaving the path -> its position at the last frame
         self.vel = {}  # rock -> its velocity over the last read, world
         self.read_at = {}  # rock -> the read count of its last read
         self.reads = 0
@@ -160,6 +165,7 @@ class RockStream:
                     if self.active.get(i):
                         self.read(i)  # write-back: the data keeps where it lies
                         self.active[i] = False
+                        self.settling.pop(i, None)
                     self._release(i)
             if self.win[k]:
                 self.stage.RemovePrim(self.win[k])
@@ -313,10 +319,24 @@ class RockStream:
             if n and not a:
                 self._sleep(i, False)
                 self.active[i] = True
-            elif a and not n:
-                self.read(i)
+            elif n:
+                self.settling.pop(i, None)
+            elif a and self._settled(i):
                 self._sleep(i, True)
                 self.active[i] = False
+
+    def _settled(self, i):
+        """Whether awake rock i has come to rest (PhysX's pose, read now, within SETTLED of the
+        last frame's), so it may sleep where it lies."""
+        if not self.read(i):
+            return False
+        pos = self.layer.rocks.pos[i].copy()
+        last = self.settling.get(i)
+        self.settling[i] = pos
+        if last is None or np.linalg.norm(pos - last) > SETTLED:
+            return False
+        del self.settling[i]
+        return True
 
     def awake(self):
         return sum(1 for v in self.active.values() if v)
@@ -348,8 +368,9 @@ class RockStream:
         rs.seen[:] = True
         self.reads += 1
         for i in rs.near(xy[:, 0], xy[:, 1], margin=1.0):
-            if self.active.get(i) and self.read(i, dt):
-                rs.rest(i, road)
+            if self.active.get(i):
+                self.read(i, dt)
+            rs.rest(i, road)  # asleep too: one frozen off the road must hold no tire up
 
     def push(self, forces, speed, radius, road, dt, apply_force):
         """The tires' reactions on the awake rocks (`rocks.reactions`), each no faster than the
@@ -377,6 +398,7 @@ class RockStream:
         self.win.clear()
         self.paths = [None] * len(self.paths)
         self.active.clear()
+        self.settling.clear()
 
 
 def _yaw(q):
