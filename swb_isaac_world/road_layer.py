@@ -287,6 +287,7 @@ class _Car:
         o = self.contact.step(dt, height, base, xy, heading, speed, z_att, v_att)
         self.scale = self.contact.friction_scale(o["load"], o["px_load"])
         self.last_out = o
+        self.last_xy = xy
         p = self.v.p
         out = []
         for i in range(WHEELS):

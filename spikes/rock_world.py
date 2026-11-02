@@ -8,8 +8,8 @@ corridor at a held speed, Isaac at 60 Hz.
 
 The corridor's rocks are `rocks.Zones` with the carriageway's cover raised to ROCK_CARRIAGEWAY
 (default 0.01; the forest road's own 0.002 puts almost none in the car's path), so the tires
-meet rocks along the whole road. A skid plate at Tesla's 138 mm ground clearance is the
-spike's own, as in rock_fixtures.py (aib's chassis box sits at about 0.42 m). ROCKS=0 runs
+meet rocks along the whole road. The skid plate is aib's, at the spec's ground clearance
+(Tesla's 138 mm). ROCKS=0 runs
 the same road with no rocks: the frame time to compare.
 
 Per speed (ROCK_SPEEDS, km/h): frame wall time, the parts of the slowest frames, awake rocks,
@@ -36,7 +36,7 @@ from pxr import Gf, PhysicsSchemaTools, PhysxSchema, UsdGeom, UsdPhysics  # noqa
 
 from aib.control import GEAR_DRIVE, Command, State  # noqa: E402
 from aib.frames import qrot  # noqa: E402
-from aib.isaac.vehicle import GROUPS, Vehicle, ensure_vehicle_scene  # noqa: E402
+from aib.isaac.vehicle import Vehicle, ensure_vehicle_scene  # noqa: E402
 from aib.rig import EgoConfig  # noqa: E402
 from swb_isaac_world import road_detail as rd  # noqa: E402
 from swb_isaac_world import road_layer  # noqa: E402
@@ -61,7 +61,6 @@ X_START = 20.0
 FRAME, SUB = 0.05, 3
 DT = FRAME / SUB
 W_LAT, Z_LAT = 0.8, 0.9
-CLEARANCE = 0.138
 
 world = World(stage_units_in_meters=1.0, physics_dt=DT, rendering_dt=DT)
 stage = omni.usd.get_context().get_stage()
@@ -102,19 +101,15 @@ cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
 rig = cfg.load_rig()
 vp = road_layer.vehicle_params(rig.vehicle)
 veh = Vehicle(stage, "/World/ego", vp, rig.ecu, rig.box_center, rig.box_dims,
-              ((X_START, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0)))
+              ((X_START, 0.0, 0.05), (1.0, 0.0, 0.0, 0.0)),
+              ground_clearance=rig.ground_clearance)
+CLEARANCE = rig.ground_clearance
+assert veh.plate_path is not None, "the rig's spec gives no ground clearance"
 PhysxSchema.PhysxVehicleAPI(stage.GetPrimAtPath("/World/ego")).GetSuspensionLineQueryTypeAttr() \
     .Set(PhysxSchema.Tokens.raycast)
-plate = UsdGeom.Cube.Define(stage, "/World/ego/skid_plate")
-plate.CreateSizeAttr(1.0)
-UsdGeom.XformCommonAPI(plate.GetPrim()).SetTranslate(
-    Gf.Vec3d(vp.wheel_base / 2, 0.0, CLEARANCE + 0.02))
-UsdGeom.XformCommonAPI(plate.GetPrim()).SetScale(Gf.Vec3f(vp.wheel_base - 0.7, 1.30, 0.04))
-UsdPhysics.CollisionAPI.Apply(plate.GetPrim())
+plate = UsdGeom.Cube(stage.GetPrimAtPath(veh.plate_path))
 PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath("/World/ego")).CreateThresholdAttr(
     0.0)
-UsdPhysics.CollisionGroup.Get(stage, f"{GROUPS}/chassis").GetCollidersCollectionAPI() \
-    .CreateIncludesRel().AddTarget(plate.GetPath())
 
 physx = omni.physx.get_physx_interface()
 LATE = os.environ.get("ROCK_LATE") == "1"  # as the world server: the stream after play
@@ -203,19 +198,37 @@ def rest_gaps(rs):
 
 
 PLATE_SET = []
+DIAG = os.environ.get("ROCK_DIAG") == "1"
+
+
+def diag(o):
+    """A tire load over 30 kN: the rocks under that tire, as the contact saw them."""
+    car = layer.cars[veh.path]
+    k = int(np.argmax(o["load"]))
+    rs, st = layer.rocks, layer.rock_stream
+    xy = getattr(car, "last_xy", None)
+    wx, wy = (xy[k] if xy is not None else (state.position[0], state.position[1]))
+    near = rs.near(np.array([wx]), np.array([wy]), 0.6)
+    road = float(layer.detail.height(np.array([wx]), np.array([wy]))[0])
+    print(f"DIAG x={state.position[0]:.2f} tire {k} load {o['load'][k]:.0f} at "
+          f"({wx:.2f}, {wy:.2f}) road {road:+.3f}", flush=True)
+    for i in near:
+        r = rs.rocks[i]
+        print(f"DIAG   rock {i} {r.mass:.1f} kg r {r.radius:.2f} pos "
+              f"{np.round(rs.pos[i], 3).tolist()} bottom {rs.bottom(i) - road:+.3f} "
+              f"top {rs.pos[i][2] + (r.verts @ rk._rot(rs.quat[i]).T)[:, 2].max() - road:+.3f} "
+              f"seen {bool(rs.seen[i])} awake {bool(st.active.get(i))} v {np.round(st.vel.get(i, np.zeros(3)), 2).tolist()}",
+              flush=True)
 
 
 def set_plate():
-    """The skid plate's bottom at CLEARANCE over the road at rest on the tires, as Tesla's
-    figure is: the body's origin rests below the road (the tire's deflection and the corner's
-    sag under the contact, 2-7 cm), so a plate placed from the origin sat that much lower."""
+    """Where the body rests: aib puts the plate's bottom at the clearance over base_link, so
+    the plate stands that much off Tesla's figure, which is over the road at rest."""
     z0 = float(state.position[2]) - float(layer.detail.height(
         np.array([state.position[0]]), np.array([state.position[1]]))[0])
-    UsdGeom.XformCommonAPI(plate.GetPrim()).SetTranslate(
-        Gf.Vec3d(vp.wheel_base / 2, 0.0, CLEARANCE - z0 + 0.02))
     PLATE_SET.append(z0)
-    print(f"PLATE origin at rest {z0 * 1e3:+.1f} mm from the road; plate bottom set "
-          f"{CLEARANCE * 1e3:.0f} mm over it", flush=True)
+    print(f"PLATE origin at rest {z0 * 1e3:+.1f} mm from the road; plate bottom "
+          f"{(CLEARANCE + z0) * 1e3:.0f} mm over it", flush=True)
 
 
 def run(kmh):
@@ -259,6 +272,8 @@ def run(kmh):
                           state.velocity[0], state.position[2], veh.tire_angle,
                           *(o["load"] if o is not None else [0.0] * 4)])
             read_contacts(kmh)
+            if DIAG and o is not None and max(o["load"]) > 30e3:
+                diag(o)
         steps_ms = (time.perf_counter() - t1) * 1e3
         if x > X_START + 40.0:
             frames.append((time.perf_counter() - t0) * 1e3)
