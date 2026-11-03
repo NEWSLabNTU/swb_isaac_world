@@ -94,3 +94,29 @@ class Groups(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Prewarm(unittest.TestCase):
+    """The pool made at the road's load (issue 032's cost, R4): its sizes are the ones placement
+    draws, and its count is what a window of the road holds."""
+
+    def test_window_matches_placement(self):
+        from swb_isaac_world import road_detail as rd
+
+        c = rd.Corridor(np.array([[0.0, 0.0], [2000.0, 0.0]]), seed=5,
+                        roughness=rd.Roughness(cls="C"), rocks=rk.Zones())
+        d = rd.Detail([c])
+        lam = rock_layer.expected_window(d)
+        band = c.section.half_width + c.section.shoulder + rock_layer.BAND_MARGIN
+        loose = []
+        for i in range(int(2000 / d.tile)):
+            for j in range(-2, 2):
+                for r, p, _, dyn in rk.place(d, i, j):
+                    if dyn and abs(p[1]) <= band:
+                        loose.append((r, p[0]))
+        sizes = {2 * x / (1 + rk.AXES[1]) for x in lam}
+        for r, _ in loose:  # every loose rock's size is one the pool is made in
+            self.assertIn(r.scale, sizes)
+        window = 2 * rock_layer.ROCK_REACH + d.tile
+        per = len(loose) / (2000.0 / window)
+        self.assertAlmostEqual(per, sum(lam.values()), delta=0.2 * sum(lam.values()))
