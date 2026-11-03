@@ -91,7 +91,7 @@ class Recorder:
         import omni.replicator.core as rep
         from aib.isaac.sensors import _mount
         from aib.sensing import APERTURE_MM, USD_CAMERA_IN_LINK
-        from pxr import Gf, UsdGeom
+        from pxr import Gf, Sdf, UsdGeom
 
         self.ego = ego
         self.stage = stage
@@ -100,6 +100,11 @@ class Recorder:
             os.makedirs(os.path.join(self.dir, d), exist_ok=True)
         self.state = open(os.path.join(self.dir, "state.jsonl"), "w")
         w, h = SIZE
+        dash_rig = rig.sensors.get("camera6")
+        # The pictures expose as the ego's camera does: RTX's auto-exposure when its rig (or the
+        # ego config) asks for it (aib's `auto_exposure`, scenario-world-bridge roadmap 059),
+        # a fixed exposure otherwise.
+        auto_exposure = bool(dash_rig and dash_rig.extra.get("auto_exposure"))
 
         def camera(path, hfov):
             cam = UsdGeom.Camera.Define(stage, path)
@@ -107,9 +112,12 @@ class Recorder:
             cam.CreateVerticalApertureAttr(APERTURE_MM * h / w)
             cam.CreateFocalLengthAttr(APERTURE_MM / (2 * math.tan(math.radians(hfov) / 2)))
             cam.CreateClippingRangeAttr(Gf.Vec2f(0.05, 1000.0))
+            if auto_exposure:
+                prim = cam.GetPrim()
+                prim.AddAppliedSchema("OmniRtxCameraAutoExposureAPI_1")
+                prim.CreateAttribute("omni:rtx:autoExposure:enabled", Sdf.ValueTypeNames.Bool).Set(True)
             return cam
 
-        dash_rig = rig.sensors.get("camera6")
         _mount(stage, f"{ego.path}/rec_dash_mount", dash_rig.transform if dash_rig else
                ((0.9, 0.0, 2.0), (1.0, 0.0, 0.0, 0.0)))
         dash = camera(f"{ego.path}/rec_dash_mount/camera",
