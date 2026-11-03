@@ -1,4 +1,5 @@
 """The rock stream's sleep rule (roadmap 066 R4, issue 031), with a stand-in for PhysX."""
+import math
 import sys
 import unittest
 from pathlib import Path
@@ -43,6 +44,41 @@ class Settle(unittest.TestCase):
         self.assertTrue(s._settled(0))
         self.assertAlmostEqual(s.layer.rocks.pos[0, 2], 0.052)  # sleeps where PhysX has it
         self.assertEqual(s.settling, {})
+
+
+class Wake(unittest.TestCase):
+    """Which rocks wake for a car at the origin heading +x: on its tire tracks, or between them
+    only when tall enough to reach its underbody."""
+
+    def stream(self, rocks, pos):
+        s = rock_layer.RockStream.__new__(rock_layer.RockStream)
+        s.layer = SimpleNamespace(rocks=rk.RockSet(rocks, np.array(pos), [(1, 0, 0, 0)] * len(pos)))
+        s.paths = [f"/r{i}" for i in range(len(pos))]
+        s.win, s.loaded = {(0, 0): None}, {(0, 0): list(range(len(pos)))}
+        s.tall = np.array([float(np.ptp(r.verts[:, 2])) for r in rocks])
+        s.active, s.settling, s.prev = {}, {}, []
+        s._sleep = lambda i, on: None
+        return s
+
+    def test_tracks_and_underbody(self):
+        small, big = rk.scaled(0, 0.04), rk.scaled(0, 0.25)
+        self.assertLess(np.ptp(small.verts[:, 2]), 0.08)
+        self.assertGreater(np.ptp(big.verts[:, 2]), 0.09)
+        pos = [(6.0, 0.79, 0.0), (6.0, -0.79, 0.0), (6.0, 0.0, 0.0), (6.0, 0.0, 0.0),
+               (6.0, 1.6, 0.0), (30.0, 0.79, 0.0), (-5.0, 0.79, 0.0)]
+        s = self.stream([small, small, small, big, small, small, small], pos)
+        s._activate([(0.0, 0.0, 0.0, 10.0, 0.79, 0.12, 0.138)])
+        self.assertEqual([bool(s.active.get(i)) for i in range(7)],
+                         [True, True, False, True, False, False, False])
+
+    def test_the_tracks_follow_the_turn(self):
+        small = rk.scaled(0, 0.04)
+        # turning left on a 20 m radius: 10 m ahead the left track is 2.5 m to the left
+        y = 20.0 - math.sqrt(20.0 ** 2 - 10.0 ** 2)
+        s = self.stream([small, small], [(10.0, y + 0.79, 0.0), (10.0, 0.79, 0.0)])
+        s.prev = [(-1.0, 0.0, -1.0 / 20.0)]  # a metre back, 1/20 rad less: the turn
+        s._activate([(0.0, 0.0, 0.0, 15.0, 0.79, 0.12, 0.138)])
+        self.assertEqual([bool(s.active.get(i)) for i in range(2)], [True, False])
 
 
 if __name__ == "__main__":

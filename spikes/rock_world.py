@@ -54,8 +54,8 @@ NO_COVER = os.environ.get("ROCK_COVER") == "0"  # the tiles and the stream, no r
 if "ROCK_COLL_STEP" in os.environ:  # the collision tiles' spacing, in 5 cm samples
     rock_layer.COLLISION_STEP = int(os.environ["ROCK_COLL_STEP"])
 ALL_STATIC = os.environ.get("ROCK_ALL_STATIC") == "1"  # no rock bodies: the prims' cost
-if "ROCK_ACTIVE_SIDE" in os.environ:  # 0: no rock wakes, every loose one a static body
-    rock_layer.ACTIVE_SIDE = float(os.environ["ROCK_ACTIVE_SIDE"])
+if os.environ.get("ROCK_WAKE") == "0":  # no rock wakes, every loose one a static body
+    rock_layer.ACTIVE_MIN, rock_layer.ACTIVE_S, rock_layer.ACTIVE_BEHIND = -99.0, 0.0, -99.0
 if "ROCK_CCD" in os.environ:
     rock_layer.SPECULATIVE_CCD = os.environ["ROCK_CCD"] == "1"
 if "ROCK_CONTACT_OFFSET" in os.environ:
@@ -169,7 +169,8 @@ def substep():
 def pose():
     p, q = state.position, state.quat
     f = qrot(q, (1.0, 0.0, 0.0))
-    return [(p[0], p[1], math.atan2(f[1], f[0]), state.velocity[0])]
+    return [(p[0], p[1], math.atan2(f[1], f[0]), state.velocity[0], vp.wheel_tread / 2,
+             vp.wheel_width / 2, CLEARANCE)]
 
 
 def frame_streams():
@@ -280,7 +281,7 @@ def run(kmh):
         mesh_ms, rock_ms = frame_streams()
         cmd.velocity = v
         cmd.acceleration = max(-3.0, min(3.0, 1.5 * (v - state.velocity[0])))
-        _, _, yaw, _ = pose()[0]
+        yaw = pose()[0][2]
         vs = max(v, 1.0)
         cmd.tire_angle = max(-0.05, min(0.05, -vp.wheel_base * (
             W_LAT ** 2 * state.position[1] / vs ** 2 + 2 * Z_LAT * W_LAT * yaw / vs)))

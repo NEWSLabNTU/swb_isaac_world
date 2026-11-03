@@ -11,8 +11,9 @@ rest with the vehicles, once a frame (`update`):
   tile worker (`rocks.place`, the tile's extras): a tile's static rocks one merged collider,
   each loose rock its own rigid body, made at most PRIMS_PER_FRAME a frame;
 - a loose rock asleep (rigidBodyEnabled off: a static collider, no pose sync) until a vehicle
-  can touch it (within ACTIVE_SIDE of its line, ACTIVE_BEHIND behind to ACTIVE_S of travel
-  ahead), and asleep again where it lies; a tile leaving the window writes its loose rocks' poses back.
+  will touch it (on its tire tracks, or between them if it reaches the underbody;
+  ACTIVE_BEHIND behind to ACTIVE_S of travel ahead), and asleep again once at rest where it
+  lies; a tile leaving the window writes its loose rocks' poses back.
 
 The stage's cost grows with its prims, not their triangles (8531 rock prims took 16 ms a frame
 in rock_field.py; the window holds about 200). Each streamed collider is put in its collision
@@ -31,11 +32,23 @@ from . import rocks as rk
 COLLISION_REACH = 32.0  # m around a vehicle with collision tiles
 COLLISION_STEP = 2  # every second 5 cm sample: 10 cm (p99 2.5 mm from the tire's height)
 ROCK_REACH = 32.0  # m around a vehicle with rock prims (1.4 s at 80 km/h)
-# awake only in a vehicle's path: within ACTIVE_SIDE of its line (half its width and a
-# margin), from ACTIVE_BEHIND behind to ACTIVE_S of travel (at least ACTIVE_MIN) ahead of its
-# front; each awake rock costs PhysX and the contact (about 30 awake took 6.6 + 2.3 ms a
-# frame at 80 km/h)
-ACTIVE_S, ACTIVE_MIN, ACTIVE_BEHIND, ACTIVE_SIDE = 0.6, 8.0, 3.0, 1.5
+# awake only where a vehicle will touch it: from ACTIVE_BEHIND behind to ACTIVE_S of travel
+# (at least ACTIVE_MIN) ahead of its front, on its tire tracks, and between them only a rock
+# tall enough to reach its underbody (a small one passes under the car, as on a real road).
+# Each awake rock costs PhysX and the contact: about 30 awake took 6.6 + 2.3 ms a frame at
+# 80 km/h, and its PhysX step is most of what the rocks cost.
+ACTIVE_S, ACTIVE_MIN, ACTIVE_BEHIND = 0.6, 8.0, 3.0
+# a vehicle's half tread, half tire width and ground clearance, m, when it gives none (a Model 3)
+HALF_TREAD, HALF_TIRE, CLEARANCE = 0.79, 0.12, 0.138
+# m, and m per m ahead: how far the tracks may be from where the vehicle's present heading and
+# turn put them (the turn is measured over the last frame and can change)
+TRACK_TOL, TRACK_GROW = 0.10, 0.02
+# m under the clearance a rock may reach: the body heaves and pitches on its springs. At
+# 80 km/h on R3's class C road base_link dipped 0.1 m, the plate 4 cm over the road, and a
+# rock 9 cm tall asleep (a static collider) between the tracks stopped the car dead (35.7 kN s
+# on the plate) with the margin at 5 cm
+PLATE_MARGIN = 0.10
+MAX_CURVATURE = 0.2  # 1/m: a 5 m radius, the tightest turn believed from two poses
 FRONT = 3.0  # m from a vehicle's origin (its rear axle) to its front, about
 PRIMS_PER_FRAME = 4  # rock prims made a frame at most: a tile's at once took 11 ms
 MAX_DEPENETRATION = 1.0  # m/s
@@ -92,6 +105,8 @@ class RockStream:
         self.loaded = {}  # tile -> its rocks' indices in layer.rocks
         self.win = {}  # tile -> its static rocks' prim path (or None)
         self.paths, self.dyn, self.mass = [], [], []  # per rock
+        self.tall = np.zeros(0)  # per rock: its height as it lies, m
+        self.prev = []  # per vehicle point: (x, y, yaw) at the last frame, for its turn
         self.ints = {}
         self.active = {}  # rock -> awake
         self.settling = {}  # rock leaving the path -> its position at the last frame
@@ -125,7 +140,8 @@ class RockStream:
         return m
 
     def update(self, points):
-        """Once a frame: `points` the vehicles' (x, y, yaw[, speed m/s]) in the world."""
+        """Once a frame: `points` the vehicles' (x, y, yaw[, speed m/s[, half tread, half tire
+        width, ground clearance, m]]) in the world, in the same order every frame."""
         d, ox, oy = self.layer.detail, self.layer.ox, self.layer.oy
         xs = [p[0] + ox for p in points]
         ys = [p[1] + oy for p in points]
@@ -218,6 +234,7 @@ class RockStream:
         self.paths.extend([None] * len(entries))
         self.dyn.extend([bool(dy) for *_, dy in entries])
         self.mass.extend([r.mass for r, *_ in entries])
+        self.tall = np.concatenate([self.tall, [float(np.ptp(r.verts[:, 2])) for r, *_ in entries]])
         self.loaded[k] = list(range(n0, n0 + len(entries)))
 
     def _release(self, i):
@@ -309,20 +326,26 @@ class RockStream:
         """Each rock with a prim awake while a vehicle can touch it: one array pass over the
         window's rocks, a USD write only for those that change."""
         rs = self.layer.rocks
+        turns = [self._curvature(n, pt) for n, pt in enumerate(points)]
+        self.prev = [tuple(pt[:3]) for pt in points]
         ids = np.array([i for k in self.win for i in self.loaded[k] if self.paths[i] is not None],
                        dtype=int)
         if not ids.size:
             return
         near = np.zeros(ids.size, dtype=bool)
-        px, py = rs.pos[ids, 0], rs.pos[ids, 1]
-        for pt in points:
+        px, py, r, tall = rs.pos[ids, 0], rs.pos[ids, 1], rs.r[ids], self.tall[ids]
+        for pt, kappa in zip(points, turns):
             x, y, yaw = pt[:3]
             ahead = max(ACTIVE_MIN, ACTIVE_S * abs(pt[3])) if len(pt) > 3 else ACTIVE_MIN
+            t, w, clear = pt[4:7] if len(pt) > 6 and pt[6] else (HALF_TREAD, HALF_TIRE, CLEARANCE)
             c, s = math.cos(yaw), math.sin(yaw)
             along = (px - x) * c + (py - y) * s
-            across = -(px - x) * s + (py - y) * c
-            near |= (along > -ACTIVE_BEHIND) & (along < FRONT + ahead) \
-                & (np.abs(across) < ACTIVE_SIDE)
+            fwd = np.maximum(along, 0.0)
+            across = -(px - x) * s + (py - y) * c - 0.5 * kappa * fwd * fwd  # off the arc
+            tol = TRACK_TOL + TRACK_GROW * fwd
+            track = np.minimum(np.abs(across - t), np.abs(across + t)) < w + r + tol
+            under = (np.abs(across) < t + r + tol) & (tall > clear - PLATE_MARGIN)
+            near |= (along > -ACTIVE_BEHIND) & (along < FRONT + ahead) & (track | under)
         for i, n in zip(ids.tolist(), near.tolist()):
             a = self.active.get(i, False)
             if n and not a:
@@ -333,6 +356,18 @@ class RockStream:
             elif a and self._settled(i):
                 self._sleep(i, True)
                 self.active[i] = False
+
+    def _curvature(self, n, pt):
+        """Vehicle point n's turn, 1/m (left positive): its heading's change over the way it
+        went since the last frame; 0 where that is too short or too long to tell."""
+        if n >= len(self.prev):
+            return 0.0
+        x0, y0, yaw0 = self.prev[n]
+        d = math.hypot(pt[0] - x0, pt[1] - y0)
+        if not 0.05 < d < 5.0:
+            return 0.0
+        dyaw = (pt[2] - yaw0 + math.pi) % (2 * math.pi) - math.pi
+        return max(-MAX_CURVATURE, min(MAX_CURVATURE, dyaw / d))
 
     def _settled(self, i):
         """Whether awake rock i has come to rest (PhysX's pose, read now, within SETTLED of the
