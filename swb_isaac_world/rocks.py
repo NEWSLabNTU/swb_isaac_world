@@ -420,12 +420,24 @@ def golombek_rapp(k, d):
 
 
 def _sizes(rng, k, area, n_grid=400):
-    """Plan diameters of the rocks on `area` m^2 at cover k."""
+    """Plan diameters of the rocks on `area` m^2 at cover k, each on the SIZE_STEP ladder."""
     d = np.geomspace(D_MIN, D_MAX, n_grid)
     pdf = golombek_rapp(k, d)
     cdf = np.concatenate([[0.0], np.cumsum((pdf[1:] + pdf[:-1]) / 2 * np.diff(d))])
     n = rng.poisson(area * cdf[-1])
-    return np.interp(rng.uniform(0, cdf[-1], n), cdf, d)
+    return size_rung(np.interp(rng.uniform(0, cdf[-1], n), cdf, d))
+
+
+# Rock sizes come in steps of this ratio (10 %): a rock streamed into the world takes a parked
+# prim of its own shape and size, as it is. Rescaling a parked prim instead made omni.physx
+# take the collider for one in two collision groups and say so, once a rock (issue 032).
+SIZE_STEP = 1.1
+
+
+def size_rung(d):
+    """Diameters `d` on the geometric ladder from D_MIN in SIZE_STEP steps."""
+    k = np.round(np.log(np.asarray(d, dtype=float) / D_MIN) / math.log(SIZE_STEP))
+    return D_MIN * SIZE_STEP ** k
 
 
 LOOSE_BELOW = 0.02  # m: Zones.loose_below when the world's ground is not filtered out

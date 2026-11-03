@@ -81,5 +81,16 @@ class Wake(unittest.TestCase):
         self.assertEqual([bool(s.active.get(i)) for i in range(2)], [True, False])
 
 
+class Groups(unittest.TestCase):
+    def test_a_frame_edits_a_group_once(self):
+        s = rock_layer.RockStream.__new__(rock_layer.RockStream)
+        s.pending = {}
+        s._group("g", "/a", True)
+        s._group("g", "/b", True)
+        s._group("g", "/a", False)  # made and released in one frame: nothing to add
+        s._group("g", "/c", False)
+        self.assertEqual(s.pending, {"g": ({"/b"}, {"/a", "/c"})})
+
+
 if __name__ == "__main__":
     unittest.main()

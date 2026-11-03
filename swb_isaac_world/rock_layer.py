@@ -114,7 +114,8 @@ class RockStream:
         self.read_at = {}  # rock -> the read count of its last read
         self.reads = 0
         self.queue = []
-        self.pool = {}  # prototype -> parked prims of it, for the next rock of that shape
+        self.pool = {}  # (prototype, scale) -> parked prims, for the next rock of that shape and size
+        self.pending = {}  # group -> (paths to add, paths to drop) at the frame's end
         self.serial = 0
         self.made, self.reused = 0, 0
         self.coll_ms, self.prim_ms = [], []
@@ -122,11 +123,26 @@ class RockStream:
     # --- the stage ---------------------------------------------------------------------------
 
     def _group(self, group, path, on):
-        from pxr import UsdPhysics
+        """Put a collider in or out of a group by its own path (issue 030), at the frame's end
+        (`_flush_groups`): one edit of a group's includes a frame. Several in one step made
+        omni.physx's Fabric update take each collider added after the first for a second
+        group and warn so (issue 032)."""
+        adds, drops = self.pending.setdefault(group, (set(), set()))
+        (adds if on else drops).add(str(path))
+        (drops if on else adds).discard(str(path))
 
-        rel = UsdPhysics.CollisionGroup.Get(self.stage, group).GetCollidersCollectionAPI() \
-            .GetIncludesRel()
-        (rel.AddTarget if on else rel.RemoveTarget)(path)
+    def _flush_groups(self):
+        from pxr import Sdf, UsdPhysics
+
+        for group, (adds, drops) in self.pending.items():
+            if not adds and not drops:
+                continue
+            rel = UsdPhysics.CollisionGroup.Get(self.stage, group).GetCollidersCollectionAPI() \
+                .GetIncludesRel()
+            have = [str(t) for t in rel.GetTargets()]
+            keep = [t for t in have if t not in drops]
+            rel.SetTargets([Sdf.Path(t) for t in keep + sorted(adds - set(keep))])
+        self.pending.clear()
 
     def _mesh(self, path, pts, idx, cnt, collision):
         from pxr import UsdGeom, UsdPhysics, Vt
@@ -169,6 +185,7 @@ class RockStream:
             self.coll[k] = path
             self.coll_ms.append((time.perf_counter() - t0) * 1e3)
         self._stream_rocks(xs, ys, points)
+        self._flush_groups()
         self._activate(points)
 
     def _stream_rocks(self, xs, ys, points):
@@ -254,7 +271,7 @@ class RockStream:
         UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(False)
         UsdGeom.Imageable(prim).MakeInvisible()
         UsdGeom.Xformable(prim).GetOrderedXformOps()[0].Set(Gf.Vec3d(0.0, 0.0, PARK_Z))
-        self.pool.setdefault(r.proto, []).append(path)
+        self.pool.setdefault((r.proto, r.scale), []).append(path)
 
     def _rock_prim(self, i):
         """Loose rock i's own prim, a rigid body asleep (static) at its present pose: a parked
@@ -263,14 +280,15 @@ class RockStream:
 
         rs = self.layer.rocks
         r = rs.rocks[i]
-        free = self.pool.get(r.proto) if r.proto is not None else None
+        # a parked prim of the same shape and size: a collider rescaled is one omni.physx takes
+        # for a collider in two collision groups and warns so (issue 032), so it never is
+        free = self.pool.get((r.proto, r.scale)) if r.proto is not None else None
         if free:
             path = free.pop()
             prim = self.stage.GetPrimAtPath(path)
             ops = UsdGeom.Xformable(prim).GetOrderedXformOps()
             ops[0].Set(Gf.Vec3d(*map(float, rs.pos[i])))
             ops[1].Set(Gf.Quatf(*map(float, rs.quat[i])))
-            ops[2].Set(Gf.Vec3f(float(r.scale), float(r.scale), float(r.scale)))
             UsdGeom.Imageable(prim).MakeVisible()
             UsdPhysics.CollisionAPI(prim).GetCollisionEnabledAttr().Set(True)
             self.paths[i] = path
@@ -444,6 +462,12 @@ class RockStream:
         self.paths = [None] * len(self.paths)
         self.active.clear()
         self.settling.clear()
+        from pxr import UsdPhysics
+
+        for g in (self.rock_g, self.detail_g):  # the groups name no prim that is gone
+            UsdPhysics.CollisionGroup.Get(self.stage, g).GetCollidersCollectionAPI() \
+                .GetIncludesRel().SetTargets([])
+        self.pending.clear()
 
 
 def _yaw(q):

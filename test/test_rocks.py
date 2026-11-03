@@ -82,6 +82,18 @@ class Support(unittest.TestCase):
         self.assertAlmostEqual(s.bottom(0), pos[0][2] - rs[0].verts[:, 2].max())
 
 
+class SizeLadder(unittest.TestCase):
+    def test_sizes_are_rungs(self):
+        d = rk._sizes(np.random.default_rng(3), 0.05, 400.0)
+        self.assertGreater(len(d), 10)
+        self.assertTrue(np.allclose(rk.size_rung(d), d))  # on the ladder already
+        k = np.log(d / rk.D_MIN) / np.log(rk.SIZE_STEP)
+        self.assertTrue(np.allclose(k, np.round(k)))
+        # the same rung, the same float: a parked prim's scale matches its next rock's exactly
+        self.assertEqual(float(rk.size_rung(0.1234)), float(rk.size_rung(0.1236)))
+        self.assertLessEqual(abs(float(rk.size_rung(0.15)) / 0.15 - 1), (rk.SIZE_STEP - 1) / 2 + 1e-9)
+
+
 class Shares(unittest.TestCase):
     def setUp(self):
         self.rock = rk.from_points(np.array([[x, y, z] for x in (-0.1, 0.1) for y in (-0.15, 0.15)

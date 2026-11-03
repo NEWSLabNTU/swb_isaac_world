@@ -28,6 +28,7 @@ sys.path.insert(0, os.path.join(HERE, ".."))
 from isaacsim import SimulationApp  # noqa: E402
 
 app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]})
+import carb  # noqa: E402
 import numpy as np  # noqa: E402
 import omni.physx  # noqa: E402
 import omni.usd  # noqa: E402
@@ -66,6 +67,7 @@ CONTACTS_ON = os.environ.get("ROCK_CONTACTS", "1") == "1"  # the ego's contact r
 if "ROCK_COLL_REACH" in os.environ:
     rock_layer.COLLISION_REACH = float(os.environ["ROCK_COLL_REACH"])
 LENGTH = float(os.environ.get("ROCK_LENGTH", "2000"))
+NO_MESHES = os.environ.get("ROCK_MESHES") == "0"  # no render mesh: the bisection of issue 032
 X_START = 20.0
 FRAME, SUB = 0.05, 3
 DT = FRAME / SUB
@@ -132,6 +134,44 @@ def stream():
         layer.rock_stream._in_band = lambda p: False  # every rock in its tile's collider
 
 
+if os.environ.get("ROCK_TRACE_USD") == "1":  # each collider and group edit, in the log's order
+    _mesh0, _group0 = rock_layer.RockStream._mesh, rock_layer.RockStream._group
+
+    def _mesh_t(self, path, *a):
+        carb.log_warn(f"USD mesh {path}")
+        return _mesh0(self, path, *a)
+
+    def _group_t(self, group, path, on):
+        carb.log_warn(f"USD group {group.rsplit('/', 1)[-1]} {path} {on}")
+        return _group0(self, group, path, on)
+
+    rock_layer.RockStream._mesh, rock_layer.RockStream._group = _mesh_t, _group_t
+    _sleep0, _prim0, _rel0 = (rock_layer.RockStream._sleep, rock_layer.RockStream._rock_prim,
+                              rock_layer.RockStream._release)
+
+    def _sleep_t(self, i, on):
+        carb.log_warn(f"USD sleep {self.paths[i]} {on}")
+        return _sleep0(self, i, on)
+
+    def _prim_t(self, i):
+        r = _prim0(self, i)
+        carb.log_warn(f"USD prim {self.paths[i]}")
+        return r
+
+    def _rel_t(self, i):
+        carb.log_warn(f"USD release {self.paths[i]}")
+        return _rel0(self, i)
+
+    rock_layer.RockStream._sleep = _sleep_t
+    rock_layer.RockStream._rock_prim = _prim_t
+    rock_layer.RockStream._release = _rel_t
+    _step0 = world.step
+
+    def _step_t(*a, **k):
+        carb.log_warn("STEP")
+        return _step0(*a, **k)
+
+    world.step = _step_t
 if ROCKS_ON and not LATE:
     stream()
 world.reset()
@@ -176,7 +216,8 @@ def pose():
 def frame_streams():
     xs = [(state.position[0], state.position[1], state.position[2])]
     t0 = time.perf_counter()
-    meshes.update(xs)
+    if not NO_MESHES:
+        meshes.update(xs)
     t1 = time.perf_counter()
     if layer.rock_stream is not None:
         layer.rock_stream.update(pose())
@@ -370,6 +411,19 @@ for kmh in SPEEDS:
         print(buf.getvalue(), flush=True)
     res["runs"][f"{kmh:g}"] = r
     print(f"{kmh:g} km/h", json.dumps(r), flush=True)
+if os.environ.get("ROCK_GROUPS") == "1":  # every collider in more than one collision group
+    gs = [(str(pr.GetPath()), UsdPhysics.CollisionGroup(pr).GetCollidersCollectionAPI()
+           .ComputeMembershipQuery()) for pr in stage.Traverse()
+          if pr.IsA(UsdPhysics.CollisionGroup)]
+    n_col = 0
+    for pr in stage.Traverse():
+        if not pr.HasAPI(UsdPhysics.CollisionAPI):
+            continue
+        n_col += 1
+        mine = [g for g, q in gs if q.IsPathIncluded(pr.GetPath())]
+        if len(mine) != 1:
+            print("GROUPS", pr.GetPath(), mine, flush=True)
+    print("GROUPS colliders", n_col, "groups", [g for g, _ in gs], flush=True)
 res["origin_at_rest_mm"] = round(PLATE_SET[0] * 1e3, 1) if PLATE_SET else None
 print("SPIKE-RESULT " + json.dumps(res))
 layer.close()
