@@ -143,6 +143,7 @@ class RockSet:
         self.quat = np.asarray(quat, dtype=float).reshape(-1, 4)
         self.r = np.array([r.radius for r in self.rocks])
         self._planes = [None] * len(self.rocks)
+        self._drop = [None] * len(self.rocks)  # lowest point under the centre, m, as turned
         # whether the tire may stand on the rock: one off the ground (thrown, lifted by the
         # chassis) holds nothing up, its only support its own inertia
         self.seen = np.ones(len(self.rocks), dtype=bool)
@@ -170,6 +171,7 @@ class RockSet:
         self.quat = np.concatenate([self.quat, np.asarray(quat, dtype=float).reshape(-1, 4)])
         self.r = np.concatenate([self.r, [r.radius for r in rocks]])
         self._planes += [None] * len(rocks)
+        self._drop += [None] * len(rocks)
         self.seen = np.concatenate([self.seen, np.ones(len(rocks), dtype=bool)])
         for i in range(len(self.rocks) - len(rocks), len(self.rocks)):
             self._file(i)
@@ -177,6 +179,7 @@ class RockSet:
     def set_pose(self, i, pos, quat):
         self.pos[i], self.quat[i] = pos, quat
         self._planes[i] = None
+        self._drop[i] = None
         c = self._cell(i)
         if c != self.cell_of[i]:  # moved into another cell
             self.cells[self.cell_of[i]].remove(i)
@@ -195,7 +198,10 @@ class RockSet:
 
     def bottom(self, i):
         """Rock i's lowest point, world z."""
-        return float(self.pos[i, 2] + (self.rocks[i].verts @ _rot(self.quat[i]).T)[:, 2].min())
+        d = self._drop[i]
+        if d is None:
+            d = self._drop[i] = float((self.rocks[i].verts @ _rot(self.quat[i]).T)[:, 2].min())
+        return float(self.pos[i, 2]) + d
 
     def rest(self, i, road, gap=0.03):
         """Whether rock i rests on the road (its lowest point within `gap` of the road
@@ -203,6 +209,14 @@ class RockSet:
         z = float(np.asarray(road(np.array([self.pos[i, 0]]), np.array([self.pos[i, 1]])))[0])
         self.seen[i] = self.bottom(i) - z <= gap
         return self.seen[i]
+
+    def rest_many(self, ids, road, gap=0.03):
+        """`rest` for each of the rocks `ids`, the road asked once for all of them."""
+        ids = np.asarray(ids, dtype=int)
+        if not ids.size:
+            return
+        z = np.asarray(road(self.pos[ids, 0], self.pos[ids, 1]), dtype=float).reshape(-1)
+        self.seen[ids] = np.array([self.bottom(i) for i in ids]) - z <= gap
 
     def near(self, x, y, margin=0.0):
         """The rocks the tire may stand on whose bounding circle comes within `margin` of

@@ -39,6 +39,9 @@ ACTIVE_S, ACTIVE_MIN, ACTIVE_BEHIND, ACTIVE_SIDE = 0.6, 8.0, 3.0, 1.5
 FRONT = 3.0  # m from a vehicle's origin (its rear axle) to its front, about
 PRIMS_PER_FRAME = 4  # rock prims made a frame at most: a tile's at once took 11 ms
 MAX_DEPENETRATION = 1.0  # m/s
+SPECULATIVE_CCD = True
+CONTACT_OFFSET = None  # m, PhysX's own when None
+SOLVER_POSITION_ITERATIONS = None  # the scene's when None
 PARK_Z = -1000.0  # m: where a parked rock prim waits for its next rock
 # m a frame: a rock leaving the car's path sleeps only once it moved less than this since the
 # last frame (0.2 m/s at 20 Hz). A rock kicked into the air is still flying when the car has
@@ -275,7 +278,13 @@ class RockStream:
         rb.CreateRigidBodyEnabledAttr(False)  # asleep: a static collider, no pose sync
         UsdPhysics.MassAPI.Apply(m.GetPrim()).CreateDensityAttr(rk.DENSITY)
         prb = PhysxSchema.PhysxRigidBodyAPI.Apply(m.GetPrim())
-        prb.CreateEnableSpeculativeCCDAttr(True)
+        prb.CreateEnableSpeculativeCCDAttr(SPECULATIVE_CCD)
+        if SOLVER_POSITION_ITERATIONS is not None:
+            prb.CreateSolverPositionIterationCountAttr(SOLVER_POSITION_ITERATIONS)
+        if CONTACT_OFFSET is not None:
+            col = PhysxSchema.PhysxCollisionAPI.Apply(m.GetPrim())
+            col.CreateContactOffsetAttr(CONTACT_OFFSET)
+            col.CreateRestOffsetAttr(0.0)
         # out of an overlap (the surface's mm, a neighbour) at a walk, not PhysX's default
         # (a stone thrown at tens of m/s as it woke)
         prb.CreateMaxDepenetrationVelocityAttr(MAX_DEPENETRATION)
@@ -367,10 +376,11 @@ class RockStream:
         rs = self.layer.rocks
         rs.seen[:] = True
         self.reads += 1
-        for i in rs.near(xy[:, 0], xy[:, 1], margin=1.0):
+        ids = rs.near(xy[:, 0], xy[:, 1], margin=1.0)
+        for i in ids:
             if self.active.get(i):
                 self.read(i, dt)
-            rs.rest(i, road)  # asleep too: one frozen off the road must hold no tire up
+        rs.rest_many(ids, road)  # asleep too: one frozen off the road must hold no tire up
 
     def push(self, forces, speed, radius, road, dt, apply_force):
         """The tires' reactions on the awake rocks (`rocks.reactions`), each no faster than the

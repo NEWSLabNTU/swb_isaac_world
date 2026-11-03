@@ -54,6 +54,15 @@ NO_COVER = os.environ.get("ROCK_COVER") == "0"  # the tiles and the stream, no r
 if "ROCK_COLL_STEP" in os.environ:  # the collision tiles' spacing, in 5 cm samples
     rock_layer.COLLISION_STEP = int(os.environ["ROCK_COLL_STEP"])
 ALL_STATIC = os.environ.get("ROCK_ALL_STATIC") == "1"  # no rock bodies: the prims' cost
+if "ROCK_ACTIVE_SIDE" in os.environ:  # 0: no rock wakes, every loose one a static body
+    rock_layer.ACTIVE_SIDE = float(os.environ["ROCK_ACTIVE_SIDE"])
+if "ROCK_CCD" in os.environ:
+    rock_layer.SPECULATIVE_CCD = os.environ["ROCK_CCD"] == "1"
+if "ROCK_CONTACT_OFFSET" in os.environ:
+    rock_layer.CONTACT_OFFSET = float(os.environ["ROCK_CONTACT_OFFSET"])
+if "ROCK_SOLVER" in os.environ:
+    rock_layer.SOLVER_POSITION_ITERATIONS = int(os.environ["ROCK_SOLVER"])
+CONTACTS_ON = os.environ.get("ROCK_CONTACTS", "1") == "1"  # the ego's contact report
 if "ROCK_COLL_REACH" in os.environ:
     rock_layer.COLLISION_REACH = float(os.environ["ROCK_COLL_REACH"])
 LENGTH = float(os.environ.get("ROCK_LENGTH", "2000"))
@@ -108,8 +117,9 @@ assert veh.plate_path is not None, "the rig's spec gives no ground clearance"
 PhysxSchema.PhysxVehicleAPI(stage.GetPrimAtPath("/World/ego")).GetSuspensionLineQueryTypeAttr() \
     .Set(PhysxSchema.Tokens.raycast)
 plate = UsdGeom.Cube(stage.GetPrimAtPath(veh.plate_path))
-PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath("/World/ego")).CreateThresholdAttr(
-    0.0)
+if CONTACTS_ON:  # as world.py: the ego reports every contact
+    PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath("/World/ego")) \
+        .CreateThresholdAttr(0.0)
 
 physx = omni.physx.get_physx_interface()
 LATE = os.environ.get("ROCK_LATE") == "1"  # as the world server: the stream after play
@@ -126,11 +136,20 @@ if ROCKS_ON and not LATE:
     stream()
 world.reset()
 world.play()
+for pr in stage.Traverse():
+    if pr.IsA(UsdPhysics.Scene):
+        print("SCENE", pr.GetPath(), {a.GetName(): a.Get() for a in pr.GetAttributes()
+                                      if a.HasAuthoredValue() or "gpu" in a.GetName().lower()
+                                      or "broadphase" in a.GetName().lower()
+                                      or "solver" in a.GetName().lower()}, flush=True)
 if ROCKS_ON and LATE:
     stream()
 state = State()
 cmd = Command(received=True, gear=GEAR_DRIVE)
 MU = vp.tire_friction
+
+
+PHYS_MS = []  # world.step alone, per substep
 
 
 def substep():
@@ -141,7 +160,9 @@ def substep():
         for i in range(4):
             veh.set_wheel_friction(i, MU * layer.scale(veh.path, i))
     veh.apply(cmd, DT, state)
+    t0 = time.perf_counter()
     world.step(render=False)
+    PHYS_MS.append((time.perf_counter() - t0) * 1e3)
     veh.sample(physx, DT, state)
 
 
@@ -264,6 +285,7 @@ def run(kmh):
         cmd.tire_angle = max(-0.05, min(0.05, -vp.wheel_base * (
             W_LAT ** 2 * state.position[1] / vs ** 2 + 2 * Z_LAT * W_LAT * yaw / vs)))
         c0 = len(layer.cost_ms)
+        p0 = len(PHYS_MS)
         t1 = time.perf_counter()
         for _ in range(SUB):
             substep()
@@ -271,13 +293,15 @@ def run(kmh):
             TRACE.append([state.position[0], state.position[1], pose()[0][2],
                           state.velocity[0], state.position[2], veh.tire_angle,
                           *(o["load"] if o is not None else [0.0] * 4)])
-            read_contacts(kmh)
+            if CONTACTS_ON:
+                read_contacts(kmh)
             if DIAG and o is not None and max(o["load"]) > 30e3:
                 diag(o)
         steps_ms = (time.perf_counter() - t1) * 1e3
         if x > X_START + 40.0:
             frames.append((time.perf_counter() - t0) * 1e3)
-            parts.append([mesh_ms, rock_ms, steps_ms, sum(layer.cost_ms[c0:])])
+            parts.append([mesh_ms, rock_ms, steps_ms, sum(layer.cost_ms[c0:]),
+                          sum(PHYS_MS[p0:])])
             rs = layer.rock_stream
             if rs is not None:
                 awake.append(rs.awake())
@@ -290,7 +314,7 @@ def run(kmh):
         json.dump(CONTACTS[-20000:], fh)
     CONTACTS.clear()
     f = np.array(frames) if frames else np.zeros(1)
-    pa = np.array(parts) if parts else np.zeros((1, 4))
+    pa = np.array(parts) if parts else np.zeros((1, 5))
     np.save(os.path.join(OUT, f"frame_ms_{kmh:g}.npy"), f)
     np.save(os.path.join(OUT, f"parts_{kmh:g}.npy"), pa)
     slowest = f >= np.percentile(f, 95)
@@ -298,9 +322,9 @@ def run(kmh):
                                     "p95": round(float(np.percentile(f, 95)), 2),
                                     "max": round(float(f.max()), 1),
                                     "over_50": int((f > 50).sum()), "n": len(frames)},
-           "parts_p50_ms": dict(zip(("meshes", "rocks", "steps", "contact"),
+           "parts_p50_ms": dict(zip(("meshes", "rocks", "steps", "contact", "physx"),
                                     np.round(np.median(pa, axis=0), 2).tolist())),
-           "parts_slowest5_ms": dict(zip(("meshes", "rocks", "steps", "contact"),
+           "parts_slowest5_ms": dict(zip(("meshes", "rocks", "steps", "contact", "physx"),
                                          np.round(pa[slowest].mean(axis=0), 1).tolist())),
            "contact_ms_p50": round(float(np.median(layer.cost_ms[n_cost:] or [0])), 3),
            "left_road_at": left, "stuck_at": stuck}
@@ -327,8 +351,22 @@ def run(kmh):
 res = {"rocks": ROCKS_ON, "carriageway_k": CARRIAGEWAY, "no_cover": NO_COVER,
        "coll_step": rock_layer.COLLISION_STEP, "coll_reach": rock_layer.COLLISION_REACH,
        "runs": {}}
+PROFILE = os.environ.get("ROCK_PROFILE") == "1"  # cProfile each speed's drive
 for kmh in SPEEDS:
+    if PROFILE:
+        import cProfile
+        import io
+        import pstats
+
+        prof = cProfile.Profile()
+        prof.enable()
     r = run(kmh)
+    if PROFILE:
+        prof.disable()
+        prof.dump_stats(os.path.join(OUT, f"profile_{kmh:g}.pstats"))
+        buf = io.StringIO()
+        pstats.Stats(prof, stream=buf).sort_stats("tottime").print_stats(30)
+        print(buf.getvalue(), flush=True)
     res["runs"][f"{kmh:g}"] = r
     print(f"{kmh:g} km/h", json.dumps(r), flush=True)
 res["origin_at_rest_mm"] = round(PLATE_SET[0] * 1e3, 1) if PLATE_SET else None

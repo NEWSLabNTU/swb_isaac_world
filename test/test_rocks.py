@@ -68,6 +68,19 @@ class Support(unittest.TestCase):
         self.assertEqual(s.top(np.array([0.0]), np.array([0.0]))[0][0], -np.inf)
         self.assertEqual(s.height(flat)(np.array([0.0]), np.array([0.0]))[0], 0.0)
 
+    def test_rest_many_is_rest(self):
+        rng = np.random.default_rng(5)
+        rs = [rk.make_rock(rng, 0.15) for _ in range(6)]
+        pos = [(i * 0.5, 0.0, -r.verts[:, 2].min() + (0.0, 0.02, 0.2)[i % 3])
+               for i, r in enumerate(rs)]
+        s = rk.RockSet(rs, pos, [(1, 0, 0, 0)] * 6)
+        s.rest_many(np.arange(6), flat)
+        many = s.seen.copy()
+        self.assertEqual([bool(s.rest(i, flat)) for i in range(6)], many.tolist())
+        self.assertEqual(many.tolist(), [True, True, False] * 2)
+        s.set_pose(0, pos[0], (0.0, 1.0, 0.0, 0.0))  # turned over: its bottom is another point
+        self.assertAlmostEqual(s.bottom(0), pos[0][2] - rs[0].verts[:, 2].max())
+
 
 class Shares(unittest.TestCase):
     def setUp(self):
