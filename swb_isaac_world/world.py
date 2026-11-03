@@ -322,6 +322,11 @@ class IsaacWorld(WorldBase):
             layer.road_rocks = layer.road.rock_stream = rock_layer.RockStream(
                 self.stage, layer.road, self.physx,
                 ground=road_layer.load_ground(path) or list(self.ground))
+            # The road's collision tiles are its surface, where the rocks rest and the
+            # underbody may scrape: ground for the contacts, as the world's own road is, not
+            # the static world a scenario fails on hitting (issue 033). Rocks stay contacts.
+            self.ground = [*self.ground, rock_layer.COLL_ROOT]
+            self.ground_cache.clear()
         log.info("road detail %s: %d corridor(s)%s; the egos' tire contact is the road layer's",
                  path, len(layer.road.detail.corridors),
                  ", with rocks" if layer.road.rocks is not None else "")
