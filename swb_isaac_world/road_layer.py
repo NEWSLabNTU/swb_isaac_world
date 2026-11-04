@@ -22,6 +22,7 @@ match, so PhysX's rigid limit lies beyond the corner's bump stop (R2).
         potholes: {per_100m: 2}
         washboard: [{u0: 120, u1: 180, pitch: 0.5}]
         water_bars: {at: [40, 95]}
+        taper: 5                      # m: fades in and out at the ends (sections that overlap)
         rocks: {shoulder: 0.01, ditch: 0.03}   # rocks.Zones: Golombek-Rapp cover k (R4)
     ground: [/World/Town/Road]        # the base's prims, filtered out for the rocks (R4)
 
@@ -75,7 +76,7 @@ def parse(data, where=FILE):
         if line.ndim != 2 or line.shape[1] not in (2, 3) or len(line) < 2:
             problems.append(f"{at}: centreline must be two or more [x, y] or [x, y, z]")
             continue
-        bad = set(c) - {"centreline", "seed", "washboard", *kinds}
+        bad = set(c) - {"centreline", "seed", "washboard", "taper", *kinds}
         if bad:
             problems.append(f"{at}: unknown key(s) {sorted(bad)}")
         for name, cls in kinds.items():
@@ -106,7 +107,8 @@ def parse(data, where=FILE):
             # the world's ground not filtered out for the rocks: loose ones only where it
             # does not hold them over the true surface (rocks.place)
             args["rocks"] = dataclasses.replace(args["rocks"], loose_below=rk.LOOSE_BELOW)
-        out.append(rd.Corridor(line, seed=int(c.get("seed", k)), washboard=tuple(zones), **args))
+        out.append(rd.Corridor(line, seed=int(c.get("seed", k)), washboard=tuple(zones),
+                               taper=float(c.get("taper", 0.0)), **args))
     if problems:
         raise RoadDetailError("\n".join(problems))
     return out

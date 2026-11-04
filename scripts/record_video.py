@@ -10,7 +10,10 @@ estimated (speed, friction, each wheel's slip) and did (ABS, TC), and each wheel
 Frames are the world server's, one per tick of simulated time. The frame rate is read from
 state.jsonl (the median step of "t", rounded to a whole number: 20 for a 50 ms tick, 50 for
 a 20 ms one), so the video runs at the scenario's own speed whatever the tick or the run's
-real-time factor was. --from and --to are times, not frame numbers. System Python with Pillow and
+real-time factor was. --from and --to are times, not frame numbers. A run with no soft soil
+(no wheel ever sank) shows the body's pitch and roll and each wheel's load instead of the soil's
+sinkage and resistance; a record with sections.json ([{x0, x1, label}], the course's sections
+along x) captions the section the car is in. System Python with Pillow and
 numpy; ffmpeg on PATH.
 """
 import argparse
@@ -26,6 +29,7 @@ STRIP = 260
 FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
 BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono-Bold.ttf"
 WHEELS = ("front left", "front right", "rear left", "rear right")
+WHEEL_COLOURS = ((120, 200, 255), (255, 150, 90), (140, 230, 140), (230, 130, 230))
 BG, FG, DIM, ACCENT, SOIL = (18, 18, 20), (235, 235, 235), (140, 140, 145), (255, 196, 64), \
     (190, 120, 60)
 
@@ -48,6 +52,24 @@ def plot(draw, box, ts, ys, now, lo, hi, color, label):
         draw.line(pts, fill=color, width=2)
     xn = x0 + (now - t0) / (t1 - t0) * (x1 - x0)
     draw.line([(xn, y0), (xn, y1)], fill=(90, 90, 96))
+
+
+def plot_many(draw, box, ts, series, now, lo, hi, label):
+    """`plot` with several (ys, colour) on one box."""
+    plot(draw, box, ts, [], now, lo, hi, (0, 0, 0), label)
+    x0, y0, x1, y1 = box
+    if len(ts) < 2 or hi <= lo:
+        return
+    t0, t1 = ts[0], max(ts[-1], ts[0] + 1e-6)
+    for ys, colour in series:
+        pts = [(x0 + (t - t0) / (t1 - t0) * (x1 - x0),
+                y1 - (min(max(y, lo), hi) - lo) / (hi - lo) * (y1 - y0)) for t, y in zip(ts, ys)
+               if t <= now]
+        if len(pts) > 1:
+            draw.line(pts, fill=colour, width=1)
+    if lo < 0 < hi:
+        yz = y1 - (0 - lo) / (hi - lo) * (y1 - y0)
+        draw.line([(x0, yz), (x1, yz)], fill=(60, 60, 64))
 
 
 def main():
@@ -82,6 +104,12 @@ def main():
     speed = [3.6 * r["speed"] for r in rows]
     sink = [max((w.get("sinkage_cm") or 0.0) for w in r["wheels"]) for r in rows]
     resist = [sum((w.get("resistance_n") or 0) for w in r["wheels"]) for r in rows]
+    soil = any(w.get("sinkage_cm") is not None for r in rows for w in r["wheels"])
+    pitch = [r.get("pitch_deg", 0.0) for r in rows]
+    roll = [r.get("roll_deg", 0.0) for r in rows]
+    loads = [[(r["wheels"][i].get("load_n") or 0) / 1000.0 for r in rows] for i in range(4)]
+    sec_file = os.path.join(a.run, "sections.json")
+    sections = json.load(open(sec_file)) if os.path.exists(sec_file) else []
     ff = subprocess.Popen(["ffmpeg", "-y", "-loglevel", "error", "-f", "rawvideo",
                            "-pix_fmt", "rgb24", "-s", f"{2 * W}x{H + STRIP}", "-r", str(fps),
                            "-i", "-", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", "20",
@@ -108,6 +136,13 @@ def main():
             d.text((x + 8, y0 + 3), label, fill=FG, font=font(20, True))
         if a.title:
             d.text((2 * W - 12 * len(a.title) - 20, 13), a.title, fill=ACCENT, font=font(20, True))
+        sec = next((x for x in sections if x["x0"] <= r["x"] < x["x1"]), None)
+        if sec:  # the course's section, big, across the top of the chase picture
+            cap = sec["label"]
+            cw = 14 * len(cap) + 24
+            cx = W + (W - cw) // 2
+            d.rectangle((cx, 50, cx + cw, 90), fill=(0, 0, 0))
+            d.text((cx + 12, 56), cap, fill=ACCENT, font=font(24, True))
         y = H + 12
         ground = next((w for w in r["wheels"] if w.get("zone")), None)
         where = f"{ground['class']} (zone {ground['zone']})" if ground else \
@@ -125,9 +160,21 @@ def main():
                    f"{ecu['mu']:.2f} | ABS {abs_min:.2f}  TC {tc:.2f}",
                    fill=ACCENT if abs_min < 1.0 or tc < 1.0 else FG, font=font(16, True))
         y += 66
-        d.text((16, y), "wheel          ground      sinkage   resistance   friction   slip  est.",
-               fill=DIM, font=font(16))
-        for i, w in enumerate(r["wheels"]):
+        if not soil:
+            d.text((16, y), "wheel          ground      load        friction   slip  est.",
+                   fill=DIM, font=font(16))
+            for i, w in enumerate(r["wheels"]):
+                ld = w.get("load_n")
+                line = (f"{WHEELS[i]:<14} {(w.get('class') or '-'):<11} "
+                        f"{'' if ld is None else f'{ld / 1000:5.2f} kN':>8}   "
+                        f"{'' if w.get('mu') is None else format(w['mu'], '.2f'):>8}   "
+                        f"{'' if w.get('slip') is None else format(w['slip'], '+.2f'):>5} "
+                        f"{'' if w.get('slip_est') is None else format(w['slip_est'], '+.2f'):>5}")
+                d.text((16, y + 22 * (i + 1)), line, fill=WHEEL_COLOURS[i], font=font(16))
+        if soil:
+            d.text((16, y), "wheel          ground      sinkage   resistance   friction   slip  est.",
+                   fill=DIM, font=font(16))
+        for i, w in enumerate(r["wheels"] if soil else ()):
             s = w.get("sinkage_cm")
             res = w.get("resistance_n")
             line = (f"{WHEELS[i]:<14} {(w.get('class') or '-'):<11} "
@@ -140,10 +187,21 @@ def main():
         x0 = 1000
         plot(d, (x0, H + 12, x0 + 430, H + STRIP - 12), ts, speed, r["t"], 0,
              max(speed) * 1.1 + 1, (120, 200, 255), "speed, km/h")
-        plot(d, (x0 + 450, H + 12, x0 + 905, H + 125), ts, sink, r["t"], 0,
-             max(sink) * 1.15 + 0.5, SOIL, f"deepest wheel sinkage, cm (max {max(sink):.1f})")
-        plot(d, (x0 + 450, H + 137, x0 + 905, H + STRIP - 12), ts, resist, r["t"], 0,
-             max(resist) * 1.1 + 10, (230, 110, 90), "soil resistance, N (4 wheels)")
+        if soil:
+            plot(d, (x0 + 450, H + 12, x0 + 905, H + 125), ts, sink, r["t"], 0,
+                 max(sink) * 1.15 + 0.5, SOIL, f"deepest wheel sinkage, cm (max {max(sink):.1f})")
+            plot(d, (x0 + 450, H + 137, x0 + 905, H + STRIP - 12), ts, resist, r["t"], 0,
+                 max(resist) * 1.1 + 10, (230, 110, 90), "soil resistance, N (4 wheels)")
+        else:
+            ang = max(1.0, max(abs(v) for v in pitch + roll) * 1.1)
+            plot_many(d, (x0 + 450, H + 12, x0 + 905, H + 125), ts,
+                      [(pitch, (120, 200, 255)), (roll, (255, 150, 90))], r["t"], -ang, ang,
+                      f"pitch (blue) {r.get('pitch_deg', 0):+.1f}, roll (orange) "
+                      f"{r.get('roll_deg', 0):+.1f}, deg")
+            top = max(1.0, max(max(l) for l in loads) * 1.05)
+            plot_many(d, (x0 + 450, H + 137, x0 + 905, H + STRIP - 12), ts,
+                      [(loads[i], WHEEL_COLOURS[i]) for i in range(4)], r["t"], 0, top,
+                      "wheel load, kN (colours as the table)")
         ff.stdin.write(np.asarray(frame, dtype=np.uint8).tobytes())
         if k % 200 == 0:
             print(f"{k}/{len(rows)}", flush=True)

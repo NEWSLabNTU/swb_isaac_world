@@ -117,6 +117,44 @@ class Generation(unittest.TestCase):
         self.assertLess(np.abs(bil - tri).max(), 0.005)
 
 
+class Sections(unittest.TestCase):
+    """A road made of sections, one corridor each, overlapping by their taper (the tour)."""
+
+    @staticmethod
+    def road(t, cls=("B", "D")):
+        a = rd.Corridor(np.array([[0.0, 0.0], [100.0 + t / 2, 0.0]]), seed=1, taper=t,
+                        roughness=rd.Roughness(cls=cls[0]))
+        b = rd.Corridor(np.array([[100.0 - t / 2, 0.0], [200.0, 0.0]]), seed=2, taper=t,
+                        roughness=rd.Roughness(cls=cls[1]))
+        return rd.Detail([a, b])
+
+    def test_the_section_stays_itself_through_a_join(self):
+        flat = rd.Roughness(gd0=1e-30)
+        a = rd.Corridor(np.array([[0.0, 0.0], [102.5, 0.0]]), taper=5.0, roughness=flat)
+        b = rd.Corridor(np.array([[97.5, 0.0], [200.0, 0.0]]), taper=5.0, roughness=flat)
+        d = rd.Detail([a, b])
+        x = np.linspace(80.0, 120.0, 81)
+        for y in (0.0, 1.5, 2.5, 3.5):
+            got = d.height(x, np.full_like(x, y))
+            np.testing.assert_allclose(got, a.section.height(np.full_like(x, y)), atol=1e-6)
+
+    def test_no_step_where_sections_meet(self):
+        d = self.road(5.0)
+        x = np.arange(60.0, 140.0, rd.SPACING)
+        h = d.height(x, np.zeros_like(x))
+        dh = np.abs(np.diff(h))
+        join = (x[1:] > 97.5) & (x[1:] < 102.5)
+        # the join's steps are no bigger than the rough section's own
+        self.assertLessEqual(dh[join].max(), dh[x[1:] > 102.5].max() * 1.5)
+
+    def test_the_sections_keep_their_class(self):
+        d = self.road(5.0)
+        x = np.arange(20.0, 180.0, rd.SPACING)
+        h = d.height(x, np.zeros_like(x))
+        smooth, rough = h[x < 90.0].std(), h[x > 110.0].std()
+        self.assertGreater(rough, 2.0 * smooth)
+
+
 class Measures(unittest.TestCase):
     def test_wk_weighting(self):
         """ISO 2631-1's Wk: about 1 at 4-8 Hz, about 0.5 at 1 Hz and 16 Hz."""

@@ -17,6 +17,14 @@ chase and course cameras, under the sun and sky world.py lights, the ego in its 
 body from SWB_VEHICLE_USD) to <out dir>/record/; scripts/record_video.py makes the video.
 Rendering costs frame time: not for the budget.
 
+ROCK_COURSE=tour drives a road of six 100 m sections from the car's start instead, one condition
+each, blended over TOUR_TAPER m (`Corridor.taper`): smooth graded gravel (class B), rough and
+rutted (D, 4 cm ruts), potholes (15 per 100 m), washboard (3 cm, 0.5 m: the wave 50 km/h
+traffic makes), water bars (four, 25 m apart) and a rocky stretch (class E, 3 % rock cover on
+the carriageway); ROCK_LENGTH 600 covers it. With ROCK_RECORD the sun stands 20 deg high, so
+relief casts shadows, and the record has sections.json (x range and label per section) for
+record_video.py's caption.
+
 Per speed (ROCK_SPEEDS, km/h): frame wall time, the parts of the slowest frames, awake rocks,
 rock prims, rocks under the tires, the fastest rock, rocks lost, where the car left the road or
 stuck.
@@ -74,6 +82,8 @@ if "ROCK_COLL_REACH" in os.environ:
     rock_layer.COLLISION_REACH = float(os.environ["ROCK_COLL_REACH"])
 LENGTH = float(os.environ.get("ROCK_LENGTH", "2000"))
 RECORD = os.environ.get("ROCK_RECORD") == "1"
+TOUR = os.environ.get("ROCK_COURSE") == "tour"
+TOUR_TAPER = 5.0  # m over which one section blends into the next
 NO_MESHES = os.environ.get("ROCK_MESHES") == "0"  # no render mesh: the bisection of issue 032
 X_START = 20.0
 FRAME, SUB = 0.05, 3
@@ -102,6 +112,37 @@ corridor = rd.Corridor(
     water_bars=rd.WaterBars(at=(X_START + 1500.0, X_START + 1550.0, X_START + 1600.0)),
     rocks=(rk.Zones(carriageway=0.0, shoulder=0.0, ditch=0.0) if NO_COVER
            else rk.Zones(carriageway=CARRIAGEWAY)) if ROCKS_ON else None)
+corridors = [corridor]
+SECTIONS = []  # (x0, x1, label): the tour's
+if TOUR:
+    T, L = TOUR_TAPER, 100.0
+    h = T / 2
+    tour = [  # label, Corridor's keywords; u runs from the section's start - T/2
+        ("1 smooth graded gravel - ISO 8608 class B", dict(roughness=rd.Roughness(cls="B"))),
+        ("2 rough and rutted - class D, ruts 4 cm", dict(
+            roughness=rd.Roughness(cls="D"),
+            ruts=rd.Ruts(depth=0.04, offset=0.83, windrow=0.03))),
+        ("3 potholes - 15 per 100 m, 3-8 cm deep", dict(
+            roughness=rd.Roughness(cls="C"),
+            potholes=rd.Potholes(per_100m=15.0, depth=(0.03, 0.08), diameter=(0.4, 1.0)))),
+        ("4 washboard - 3 cm, 0.5 m wave", dict(
+            roughness=rd.Roughness(cls="C"),
+            washboard=(rd.Washboard(h, L + h, height=0.03, pitch=0.5),))),
+        ("5 water bars - 6 cm, 35 deg, every 25 m", dict(
+            roughness=rd.Roughness(cls="C"),
+            water_bars=rd.WaterBars(at=(h + 12.5, h + 37.5, h + 62.5, h + 87.5)))),
+        ("6 rocky - class E, 3 % rock cover", dict(
+            roughness=rd.Roughness(cls="E"),
+            rocks=rk.Zones(carriageway=0.03, shoulder=0.05, ditch=0.08) if ROCKS_ON else None)),
+    ]
+    corridors = []
+    for k, (label, kw) in enumerate(tour):
+        a, b = X_START + k * L, X_START + (k + 1) * L
+        lo = x0 if k == 0 else a - h  # the first from the world's start, the last to its end
+        hi = x1 if k == len(tour) - 1 else b + h
+        corridors.append(rd.Corridor(np.array([[lo, 0.0], [hi, 0.0]]), seed=660 + k,
+                                     taper=T, **kw))
+        SECTIONS.append((a, b, label))
 
 sim = omni.physx.get_physx_simulation_interface()
 STAGE_ID = omni.usd.get_context().get_stage_id()
@@ -111,7 +152,7 @@ def apply_force(path, force, position):  # world.py's _apply_force
     sim.apply_force_at_pos(STAGE_ID, PhysicsSchemaTools.sdfPathToInt(path), force, position)
 
 
-layer = road_layer.RoadLayer([corridor], apply_force=apply_force)
+layer = road_layer.RoadLayer(corridors, apply_force=apply_force)
 meshes = road_layer.MeshStream(stage, layer)
 
 cfg = EgoConfig.load(os.environ.get("AIB_EGO") or os.path.join(
@@ -135,7 +176,13 @@ if RECORD:  # world.py's light and the ego's catalogue body, for the cameras
     sun = UsdLux.DistantLight.Define(stage, "/World/sun")
     sun.CreateIntensityAttr(2500.0)
     sun.CreateAngleAttr(1.0)
-    UsdGeom.XformCommonAPI(sun.GetPrim()).SetRotate(Gf.Vec3f(-50.0, 20.0, 30.0))  # world.py SUN_ROTATE
+    if TOUR:  # a low sun from behind the car's right: relief casts shadows ahead of it
+        el, az = math.radians(20.0), math.radians(-135.0)  # the sun's elevation, azimuth
+        to_sun = Gf.Vec3d(math.cos(el) * math.cos(az), math.cos(el) * math.sin(az), math.sin(el))
+        q = Gf.Rotation(Gf.Vec3d(0, 0, 1), to_sun).GetQuat()  # a light shines down its -Z
+        UsdGeom.Xformable(sun.GetPrim()).AddOrientOp().Set(Gf.Quatf(q))
+    else:
+        UsdGeom.XformCommonAPI(sun.GetPrim()).SetRotate(Gf.Vec3f(-50.0, 20.0, 30.0))  # world.py SUN_ROTATE
     UsdLux.DomeLight.Define(stage, "/World/sky").CreateIntensityAttr(600.0)
     from pxr import Sdf, UsdShade
 
@@ -362,7 +409,10 @@ def run(kmh):
 
         rec = Recorder(os.path.join(OUT, "record"), stage,
                        SimpleNamespace(path=veh.path, state=state, vehicle=veh), rig,
-                       f"rocks-{kmh:g}kmh")
+                       f"{'tour' if TOUR else 'rocks'}-{kmh:g}kmh")
+        if SECTIONS:
+            with open(os.path.join(rec.dir, "sections.json"), "w") as f:
+                json.dump([{"x0": a, "x1": b, "label": lab} for a, b, lab in SECTIONS], f)
         # until every camera delivers, by the clock: the first renders compile the looks'
         # shaders, which take minutes on a loaded host whatever the frame count
         t_w, n_w = time.perf_counter(), 0

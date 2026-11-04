@@ -177,7 +177,11 @@ class Corridor:
     height along it (the world's road surface is built from the same line; `base_z`), and its
     features. `grade`:
     the base road's grade along u, a function u -> % (positive uphill), for the potholes'
-    sags and the water bars' spacing; None: level."""
+    sags and the water bars' spacing; None: level. `taper` (m, 0: none): the detail fades in
+    over the first `taper` m and out over the last, so that a road made of sections (one
+    corridor each, the next starting `taper` m before this one ends) blends from one into the
+    next: in the overlap the two weights sum to one, so a cross-section both share stays
+    itself, and nothing steps where one ends."""
 
     centreline: np.ndarray
     seed: int = 0
@@ -189,6 +193,7 @@ class Corridor:
     water_bars: WaterBars = None
     grade: object = None
     rocks: object = None  # rocks.Zones: the rock cover by zone (R4); None: no rocks
+    taper: float = 0.0
 
     def __post_init__(self):
         line = np.asarray(self.centreline, dtype=float)
@@ -226,6 +231,13 @@ class Corridor:
             cross = self.seg_dir[s, 0] * rel[:, 1] - self.seg_dir[s, 1] * rel[:, 0]
             v = np.where(better, cross, v)
         return u, v, best_d <= self.reach
+
+    def weight(self, u):
+        """The share of this corridor's detail at u along it: 1, or falling linearly to 0 over
+        `taper` m at either end."""
+        if self.taper <= 0:
+            return np.ones(np.shape(u))
+        return np.clip(np.minimum(u, self.length - u) / self.taper, 0.0, 1.0)
 
     def _rng(self, *key):
         return np.random.default_rng([self.seed & 0xFFFFFFFF, *[int(k) & 0xFFFFFFFF
@@ -382,7 +394,7 @@ class Detail:
                     r += f[np.ix_(oy % (2 * n), ox % (2 * n))] * np.outer(wy, wx)
             # the roughness is the carriageway's and its shoulders', fading out over the ditch
             fade = np.clip((c.section.half_width + c.section.shoulder + 1.0 - np.abs(v)), 0, 1)
-            out += np.where(near, h + r * fade, 0.0)
+            out += np.where(near, (h + r * fade) * c.weight(u), 0.0)
         return out
 
     def _keep(self, key, t):

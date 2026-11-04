@@ -270,6 +270,8 @@ class Recorder:
                "yaw_deg": round(math.degrees(math.atan2(2 * (w * qz + qx * qy),
                                                         1 - 2 * (qy * qy + qz * qz))), 2),
                "pitch_deg": round(math.degrees(math.asin(max(-1.0, min(1.0, 2 * (w * qy - qz * qx))))), 2),
+               "roll_deg": round(math.degrees(math.atan2(2 * (w * qx + qy * qz),
+                                                         1 - 2 * (qx * qx + qy * qy))), 2),
                "speed": round(s.velocity[0], 3), "accel": round(s.acceleration[0], 3),
                "accel_cmd": cmd and round(cmd.acceleration, 3),
                "tire_angle": round(s.tire_angle, 4), "wheels": []}
@@ -301,6 +303,9 @@ class Recorder:
                 wheel["slip_angle_deg"] = round(math.degrees(v.wheel_states[i].slip_angle), 2)
             if est.get("slip"):
                 wheel["slip_est"] = round(est["slip"][i], 3)
+            contacts = getattr(v, "contacts", None)
+            if contacts is not None:  # the suspension's force: what the ground carries, N
+                wheel["load_n"] = round(contacts[i].load)
             out = surface.soil_out.get((v.path, i)) if surface is not None else None
             if out is not None:
                 o, share = out
