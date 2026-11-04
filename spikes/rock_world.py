@@ -12,6 +12,11 @@ meet rocks along the whole road. The skid plate is aib's, at the spec's ground c
 (Tesla's 138 mm). ROCKS=0 runs
 the same road with no rocks: the frame time to compare.
 
+ROCK_RECORD=1 films each drive with the world server's recorder (`recorder.py`: dash, wheel,
+chase and course cameras, under the sun and sky world.py lights, the ego in its catalogue
+body from SWB_VEHICLE_USD) to <out dir>/record/; scripts/record_video.py makes the video.
+Rendering costs frame time: not for the budget.
+
 Per speed (ROCK_SPEEDS, km/h): frame wall time, the parts of the slowest frames, awake rocks,
 rock prims, rocks under the tires, the fastest rock, rocks lost, where the car left the road or
 stuck.
@@ -27,7 +32,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.join(HERE, ".."))
 from isaacsim import SimulationApp  # noqa: E402
 
-app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]})
+app = SimulationApp({"headless": True, "extra_args": ["--/crashreporter/url="]
+                     + os.environ.get("ISAAC_KIT_ARGS", "").split()})
 import carb  # noqa: E402
 import numpy as np  # noqa: E402
 import omni.physx  # noqa: E402
@@ -67,6 +73,7 @@ CONTACTS_ON = os.environ.get("ROCK_CONTACTS", "1") == "1"  # the ego's contact r
 if "ROCK_COLL_REACH" in os.environ:
     rock_layer.COLLISION_REACH = float(os.environ["ROCK_COLL_REACH"])
 LENGTH = float(os.environ.get("ROCK_LENGTH", "2000"))
+RECORD = os.environ.get("ROCK_RECORD") == "1"
 NO_MESHES = os.environ.get("ROCK_MESHES") == "0"  # no render mesh: the bisection of issue 032
 X_START = 20.0
 FRAME, SUB = 0.05, 3
@@ -119,6 +126,44 @@ assert veh.plate_path is not None, "the rig's spec gives no ground clearance"
 PhysxSchema.PhysxVehicleAPI(stage.GetPrimAtPath("/World/ego")).GetSuspensionLineQueryTypeAttr() \
     .Set(PhysxSchema.Tokens.raycast)
 plate = UsdGeom.Cube(stage.GetPrimAtPath(veh.plate_path))
+if RECORD:  # world.py's light and the ego's catalogue body, for the cameras
+    from pxr import UsdLux
+
+    from swb_isaac_world import vehicle_assets
+    from swb_isaac_world.catalogue import ego_model
+
+    sun = UsdLux.DistantLight.Define(stage, "/World/sun")
+    sun.CreateIntensityAttr(2500.0)
+    sun.CreateAngleAttr(1.0)
+    UsdGeom.XformCommonAPI(sun.GetPrim()).SetRotate(Gf.Vec3f(-50.0, 20.0, 30.0))  # world.py SUN_ROTATE
+    UsdLux.DomeLight.Define(stage, "/World/sky").CreateIntensityAttr(600.0)
+    from pxr import Sdf, UsdShade
+
+    def look(path, colour, rough):  # a plain surface for the cameras, bound to a subtree
+        mat = UsdShade.Material.Define(stage, f"/World/Looks/{path.strip('/').replace('/', '_')}")
+        sh = UsdShade.Shader.Define(stage, f"{mat.GetPath()}/shader")
+        sh.CreateIdAttr("UsdPreviewSurface")
+        sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*colour))
+        sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(rough)
+        mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
+        prim = stage.DefinePrim(path) if not stage.GetPrimAtPath(path) else stage.GetPrimAtPath(path)
+        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+
+    # grass beyond the road: a picture-only plane a little under the base, which is hidden
+    # (the base and the road's render mesh coincide on the flat and would fight)
+    UsdGeom.Imageable(base.GetPrim()).MakeInvisible()
+    grass = UsdGeom.Mesh.Define(stage, "/World/env/grass")
+    grass.CreatePointsAttr([Gf.Vec3f(x0, -400, -0.04), Gf.Vec3f(x1, -400, -0.04),
+                            Gf.Vec3f(x1, 400, -0.04), Gf.Vec3f(x0, 400, -0.04)])
+    grass.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
+    grass.CreateFaceVertexCountsAttr([4])
+    look("/World/env/grass", (0.20, 0.24, 0.13), 0.95)
+    look(road_layer.MeshStream.ROOT, (0.42, 0.36, 0.28), 0.9)  # the gravel road
+    look(rock_layer.ROOT, (0.30, 0.29, 0.28), 0.8)  # rocks
+    asset = vehicle_assets.VehicleAssets().get(ego_model(rig))
+    if asset is not None:
+        vehicle_assets.add_ego_body(stage, veh.path, asset,
+                                    collider=stage.GetPrimAtPath(f"{veh.path}/body"))
 if CONTACTS_ON:  # as world.py: the ego reports every contact
     PhysxSchema.PhysxContactReportAPI.Apply(stage.GetPrimAtPath("/World/ego")) \
         .CreateThresholdAttr(0.0)
@@ -192,7 +237,7 @@ MU = vp.tire_friction
 PHYS_MS = []  # world.step alone, per substep
 
 
-def substep():
+def substep(render=False):
     """world.py's substep for one ego: the road's contact (and its share of the friction),
     the ego, PhysX."""
     if veh.last is not None:
@@ -201,7 +246,7 @@ def substep():
             veh.set_wheel_friction(i, MU * layer.scale(veh.path, i))
     veh.apply(cmd, DT, state)
     t0 = time.perf_counter()
-    world.step(render=False)
+    world.step(render=render)
     PHYS_MS.append((time.perf_counter() - t0) * 1e3)
     veh.sample(physx, DT, state)
 
@@ -305,6 +350,30 @@ def run(kmh):
         substep()
     if not PLATE_SET:
         set_plate()
+    rec = None
+    if RECORD:
+        from types import SimpleNamespace
+
+        from swb_isaac_world import recorder
+        from swb_isaac_world.recorder import Recorder
+
+        if "ROCK_RECORD_SIZE" in os.environ:  # smaller pictures where the GPU is short
+            recorder.SIZE = tuple(int(v) for v in os.environ["ROCK_RECORD_SIZE"].split("x"))
+
+        rec = Recorder(os.path.join(OUT, "record"), stage,
+                       SimpleNamespace(path=veh.path, state=state, vehicle=veh), rig,
+                       f"rocks-{kmh:g}kmh")
+        # until every camera delivers, by the clock: the first renders compile the looks'
+        # shaders, which take minutes on a loaded host whatever the frame count
+        t_w, n_w = time.perf_counter(), 0
+        while time.perf_counter() - t_w < 600.0:
+            substep(render=True)
+            n_w += 1
+            if all(rec._ready(ann.get_data()) for _, _, ann in rec.views):
+                break
+        print(f"RECORD warm {n_w} frames {time.perf_counter() - t_w:.0f} s ready "
+              f"{all(rec._ready(ann.get_data()) for _, _, ann in rec.views)}", flush=True)
+    t_sim = 0.0
     frames, parts, awake = [], [], []
     left = stuck = None
     slow, vmax = 0.0, 0.0
@@ -329,8 +398,10 @@ def run(kmh):
         c0 = len(layer.cost_ms)
         p0 = len(PHYS_MS)
         t1 = time.perf_counter()
-        for _ in range(SUB):
-            substep()
+        if rec is not None:
+            rec.place_course(FRAME)
+        for k in range(SUB):
+            substep(render=rec is not None and k == SUB - 1)
             o = layer.cars[veh.path].last_out if veh.path in layer.cars else None
             TRACE.append([state.position[0], state.position[1], pose()[0][2],
                           state.velocity[0], state.position[2], veh.tire_angle,
@@ -340,6 +411,9 @@ def run(kmh):
             if DIAG and o is not None and max(o["load"]) > 30e3:
                 diag(o)
         steps_ms = (time.perf_counter() - t1) * 1e3
+        t_sim += FRAME
+        if rec is not None:
+            rec.capture(t_sim, None, None)
         if x > X_START + 40.0:
             frames.append((time.perf_counter() - t0) * 1e3)
             parts.append([mesh_ms, rock_ms, steps_ms, sum(layer.cost_ms[c0:]),
@@ -350,6 +424,9 @@ def run(kmh):
                 vmax = max([vmax] + [float(np.linalg.norm(u)) for u in rs.vel.values()])
         if len(frames) % 400 == 1:
             print(f"  {kmh:g} km/h at {x:.0f} m: {awake[-1] if awake else 0} awake", flush=True)
+    if rec is not None:
+        rec.close()
+        print(f"RECORDED {rec.dir} frames {rec.frame} dropped {rec.dropped}", flush=True)
     np.save(os.path.join(OUT, f"trace_{kmh:g}.npy"), np.array(TRACE[-30000:]))
     TRACE.clear()
     with open(os.path.join(OUT, f"contacts_{kmh:g}.json"), "w") as fh:
