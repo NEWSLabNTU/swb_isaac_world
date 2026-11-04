@@ -117,13 +117,15 @@ class IsaacWorld(WorldBase):
         return f"Isaac Sim {self.isaac_version}"
 
     def __init__(self, physics_dt=1 / 60, ego_config=None, ego_domain=None, follow=False,
-                 surface_maps=None, record=None):
+                 surface_maps=None, record=None, record_view="offroad"):
         """`surface_maps`: `{usd realpath: (surfaces.yaml, map origin)}`
         (`surface_layer.register`). `record`: a directory for each scenario's first ego's
-        pictures and soil state (`recorder`), or None."""
+        pictures and soil state (`recorder`), or None; `record_view`: its view
+        (`recorder.VIEWS`)."""
         self.isaac_version = _isaac_version()
         self.follow = follow
         self.record = record
+        self.record_view = record_view
         self.recorder = None
         self.surface_maps = dict(surface_maps or {})
         self.surface = None  # SurfaceLayer of the loaded world, if it has a surface map
@@ -734,7 +736,7 @@ class IsaacWorld(WorldBase):
                 from .recorder import Recorder
 
                 self.recorder = Recorder(self.record, self.stage, ego, self.ego_rig, name,
-                                         self.surface)
+                                         self.surface, view=self.record_view)
                 # Its cameras' first renders are as slow as the sensors': in the Spawn too
                 frames += self.recorder.warm_up(warm_step)
             log.info("spawned ego %r as PhysX vehicle %s (box %s at %s); sensors warm after %d "

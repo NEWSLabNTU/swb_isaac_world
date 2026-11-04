@@ -45,6 +45,17 @@ REAR_LEFT = 2  # aib's WHEELS order
 CHASE_EYE = (-7.5, 3.0, 3.0)
 CHASE_AT = (3.0, 0.0, 0.3)
 CHASE_FOV = 60.0
+# The views (`--record-view`): the pictures' size and the chase camera (eye and look-at point in
+# base_link, horizontal FOV). `offroad`, the default, is the above. `road` is the chase that
+# scenario-world-bridge roadmaps 059 and 072 agreed for the NTU twin (parity P6), so that CARLA's
+# and Isaac's videos frame the car alike: 7 m behind the rear axle, 3.4 m up, on the car's
+# centreline, pitched 15 deg down, 80 deg, 1280 x 720.
+_P = math.radians(15.0)
+VIEWS = {
+    "offroad": dict(size=SIZE, chase_eye=CHASE_EYE, chase_at=CHASE_AT, chase_fov=CHASE_FOV),
+    "road": dict(size=(1280, 720), chase_eye=(-7.0, 0.0, 3.4),
+                 chase_at=(-7.0 + math.cos(_P), 0.0, 3.4 - math.sin(_P)), chase_fov=80.0),
+}
 # The trackside camera: past the zone's far end and to the right of the ego's line, m.
 TRACK_BEYOND, TRACK_SIDE, TRACK_HEIGHT, TRACK_FOV = 3.0, 2.6, 1.3, 60.0
 # The course camera: behind and above the car along its velocity, looking just past its nose, m;
@@ -87,7 +98,7 @@ def _ahead(origin, heading, zones, reach=400.0):
 
 
 class Recorder:
-    def __init__(self, root, stage, ego, rig, name, surface=None):
+    def __init__(self, root, stage, ego, rig, name, surface=None, view="offroad"):
         import omni.replicator.core as rep
         from aib.isaac.sensors import _mount
         from aib.sensing import APERTURE_MM, USD_CAMERA_IN_LINK
@@ -99,7 +110,9 @@ class Recorder:
         for d in ("dash", "wheel", "chase", "course", "track"):
             os.makedirs(os.path.join(self.dir, d), exist_ok=True)
         self.state = open(os.path.join(self.dir, "state.jsonl"), "w")
-        w, h = SIZE
+        v = VIEWS[view]
+        self.size = v["size"]
+        w, h = self.size
         dash_rig = rig.sensors.get("camera6")
         # The pictures expose as the ego's camera does: RTX's auto-exposure when its rig (or the
         # ego config) asks for it (aib's `auto_exposure`, scenario-world-bridge roadmap 059),
@@ -128,10 +141,11 @@ class Recorder:
         wheel.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*WHEEL_EYE))
         wheel.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
             Gf.Quatd(*_look_at(WHEEL_EYE, WHEEL_AT)))
-        chase = camera(f"{ego.path}/rec_chase", CHASE_FOV)
-        chase.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(Gf.Vec3d(*CHASE_EYE))
+        chase = camera(f"{ego.path}/rec_chase", v["chase_fov"])
+        chase.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
+            Gf.Vec3d(*v["chase_eye"]))
         chase.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble).Set(
-            Gf.Quatd(*_look_at(CHASE_EYE, CHASE_AT)))
+            Gf.Quatd(*_look_at(v["chase_eye"], v["chase_at"])))
         course = camera("/World/rec_course", COURSE_FOV)
         self.course_ops = (course.AddTranslateOp(precision=UsdGeom.XformOp.PrecisionDouble),
                            course.AddOrientOp(precision=UsdGeom.XformOp.PrecisionDouble))
@@ -143,7 +157,7 @@ class Recorder:
             cams.append(("track", track))
         self.views = []
         for kind, cam in cams:
-            rp = rep.create.render_product(str(cam.GetPath()), resolution=SIZE)
+            rp = rep.create.render_product(str(cam.GetPath()), resolution=self.size)
             ann = rep.AnnotatorRegistry.get_annotator("rgb")
             ann.attach([rp.path])
             self.views.append((kind, rp, ann))

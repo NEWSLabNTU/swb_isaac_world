@@ -117,6 +117,11 @@ def main(argv=None):
                     help="a directory: each scenario's first ego's dash and wheel pictures "
                          "and soil state, every rendered frame (`recorder`), for a video; "
                          "empty: none")
+    ap.add_argument("--record-view", default="offroad", choices=("offroad", "road"),
+                    help="with --record: the pictures' size and chase camera (`recorder.VIEWS`): "
+                         "offroad (960 x 540, a high chase from behind and to the left) or road "
+                         "(1280 x 720, 7 m behind, 3.4 m up, 15 deg down, 80 deg: the NTU twin's, "
+                         "the same as CARLA's)")
     ap.add_argument("--physics-hz", type=float, default=60.0,
                     help="the physics rate, Hz: PhysX, the egos' onboard computers and the soil "
                          "step at it, and the bridge splits SSv2's step into steps no longer "
@@ -178,7 +183,7 @@ def main(argv=None):
     world = IsaacWorld(physics_dt=1 / args.physics_hz,
                        ego_config=args.ego or None, ego_domain=args.ego_domain or None,
                        follow=bool(args.display and args.follow), surface_maps=surface_maps,
-                       record=args.record or None)
+                       record=args.record or None, record_view=args.record_view)
     # The first listed is preloaded last, so it is the one loaded when the bridge first asks.
     for usd in reversed(preload):
         world.preload(usd)
