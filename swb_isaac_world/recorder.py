@@ -163,6 +163,9 @@ class Recorder:
             self.views.append((kind, rp, ann))
         self.frame = 0
         self.dropped = 0
+        # True: a full queue waits for the writer instead of dropping the frame (a recording
+        # that must be whole, at the simulation's pace; issue 036)
+        self.block = False
         self.queue = queue.Queue(maxsize=120)
         self.writer = threading.Thread(target=self._write, daemon=True)
         self.writer.start()
@@ -255,8 +258,12 @@ class Recorder:
             images.append((kind, np.ascontiguousarray(np.asarray(d)[..., :3], dtype=np.uint8)))
         n = self.frame
         self.frame += 1
+        item = (n, images, self._state(n, sim_time, surface, ego_ros))
+        if self.block:
+            self.queue.put(item)
+            return
         try:
-            self.queue.put_nowait((n, images, self._state(n, sim_time, surface, ego_ros)))
+            self.queue.put_nowait(item)
         except queue.Full:
             self.dropped += 1
 
@@ -321,7 +328,8 @@ class Recorder:
 
         while True:
             item = self.queue.get()
-            if item is None:
+            if item is None:  # the last frame written: the writer closes the file (036)
+                self.state.close()
                 return
             n, images, row = item
             for kind, rgb in images:
@@ -340,6 +348,8 @@ class Recorder:
             if self.stage.GetPrimAtPath(path):
                 self.stage.RemovePrim(path)
         self.queue.put(None)
-        self.writer.join(timeout=30)
-        self.state.close()
+        self.writer.join(timeout=None if self.block else 30)
+        if self.writer.is_alive():
+            log.warning("recorder: %d frames still being written to %s", self.queue.qsize(),
+                        self.dir)
         log.info("recorded %d frames to %s (%d dropped)", self.frame, self.dir, self.dropped)

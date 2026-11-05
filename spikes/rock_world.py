@@ -410,6 +410,7 @@ def run(kmh):
         rec = Recorder(os.path.join(OUT, "record"), stage,
                        SimpleNamespace(path=veh.path, state=state, vehicle=veh), rig,
                        f"{'tour' if TOUR else 'rocks'}-{kmh:g}kmh")
+        rec.block = True  # every frame, at the cost of pace (issue 036)
         if SECTIONS:
             with open(os.path.join(rec.dir, "sections.json"), "w") as f:
                 json.dump([{"x0": a, "x1": b, "label": lab} for a, b, lab in SECTIONS], f)
