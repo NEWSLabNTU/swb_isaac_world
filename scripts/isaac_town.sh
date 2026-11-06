@@ -1,14 +1,17 @@
 #!/usr/bin/env bash
 # A CARLA town as an Isaac world (roadmap 043): export it with SimReady when its USD is
-# missing, write its collider layer (swb_isaac_world.physics_layer) and its world file
-# (swb_isaac_world.usd_world) for the town's Autoware map.
+# missing, write its collider layer (swb_isaac_world.physics_layer) when that is missing
+# too, and its world file (swb_isaac_world.usd_world) for the town's Autoware map.
 #
-#   isaac_town.sh <Town> [map_path:=<dir>] [export:=true]
+#   isaac_town.sh <Town> [map_path:=<dir>] [export:=true] [physics:=true]
 #
 #   <Town>          CARLA's level name: Town01, Town02, Town03, Town05, Town10HD, ...
 #   map_path:=<dir> the Autoware map the world file goes with (default
 #                   data/carla-autoware-bridge/<Town>, or <Town> without "HD": Town10)
 #   export:=true    export again even if <Town>.usd exists
+#   physics:=true   write <Town>_physics.usda again even if it exists (an export does too).
+#                   The asset set ships the layer and its manifest lists it, so by default a
+#                   town from the set is left as it came and `asset_set check` stays clean
 #
 # Host paths from the environment:
 #   CARLA_SRC   CARLA 0.9.16 editor build with SimReady (default /mnt/disk1/carla-src), with
@@ -23,16 +26,17 @@
 # material warnings even then, and sometimes hangs at exit, so it is killed if it does.
 set -euo pipefail
 
-usage() { sed -n '2,23p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,26p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 [ $# -ge 1 ] || usage
 town=$1; shift
 here=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)    # this repository
-map_path=""; force=false
+map_path=""; force=false; physics=false
 for a in "$@"; do
     case "$a" in
         map_path:=*) map_path=${a#map_path:=} ;;
         export:=*) force=${a#export:=} ;;
-        *) echo "isaac_town: unknown argument '$a' (map_path:=, export:=)" >&2; exit 2 ;;
+        physics:=*) physics=${a#physics:=} ;;
+        *) echo "isaac_town: unknown argument '$a' (map_path:=, export:=, physics:=)" >&2; exit 2 ;;
     esac
 done
 CARLA_SRC=${CARLA_SRC:-/mnt/disk1/carla-src}
@@ -93,7 +97,9 @@ if [ "$force" = true ] || [ ! -f "$usd" ]; then
         echo "isaac_town: export of $town failed; see $log" >&2; exit 1
     fi
     echo "isaac_town: exported $town in $(( $(date +%s) - started )) s"
+    physics=true
 fi
+layer="$out/${town}_physics.usda"
 
 export ISAAC_ROOT=${ISAAC_ROOT:-/mnt/disk1/isaac-sim}
 set +u
@@ -102,5 +108,9 @@ set -u
 cd "$here"
 # The export's props are crate 0.7.0; pxr warns once per file without this.
 export PXR_USDC_EMIT_DEPRECATION_WARNINGS=0
-python -m swb_isaac_world.physics_layer "$usd"
-python -m swb_isaac_world.usd_world "$map_path" "$out/${town}_physics.usda"
+if [ "$physics" = true ] || [ ! -f "$layer" ]; then
+    python -m swb_isaac_world.physics_layer "$usd" -o "$layer"
+else
+    echo "isaac_town: $layer exists, kept (physics:=true writes it again)"
+fi
+python -m swb_isaac_world.usd_world "$map_path" "$layer"
