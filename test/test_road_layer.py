@@ -141,3 +141,24 @@ class Layer(unittest.TestCase):
         f = sum(ff for ff, _ in pushed[-1][0])
         self.assertLess(f[2], -1000.0)  # pressed down by the tire
         layer.close()
+
+
+class MeshFaces(unittest.TestCase):
+    """The render mesh's faces: only the corridors', road and verge apart (no Isaac)."""
+
+    def test_faces_cover_the_corridor_only(self):
+        from swb_isaac_world import road_detail as rd
+
+        c = rd.Corridor(np.array([[0.0, 0.0], [400.0, 0.0]]), seed=1)
+        d = rd.Detail([c])
+        ms = road_layer.MeshStream(None, SimpleNamespace(detail=d, ox=0.0, oy=0.0))
+        quads, road = ms.tile_faces(d.zones_tile(2, -1))
+        n, s = d.n, d.spacing
+        ys = -16.0 + (np.arange(n + 1) * s)[quads // (n + 1)].mean(axis=1)
+        self.assertLess(ys.min(), -c.reach + 0.2)  # out to the reach
+        self.assertGreater(ys.min(), -c.reach - 0.2)  # and no further
+        edge = c.section.half_width + c.section.shoulder
+        self.assertTrue((np.abs(ys[road]) <= edge + s).all())
+        self.assertTrue((np.abs(ys[~road]) >= edge - s).all())
+        self.assertGreater(road.sum(), 0)
+        self.assertGreater((~road).sum(), 0)

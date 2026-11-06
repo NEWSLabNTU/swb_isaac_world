@@ -155,6 +155,20 @@ class Sections(unittest.TestCase):
         self.assertGreater(rough, 2.0 * smooth)
 
 
+class Zones(unittest.TestCase):
+    def test_road_verge_and_outside(self):
+        c = rd.Corridor(LINE, seed=1)
+        d = rd.Detail([c])
+        z = d.zones_tile(2, -1)  # y from -16 to 0: the corridor's right half and beyond
+        y = -16.0 + np.arange(d.n + 1) * d.spacing
+        col = z[:, d.n // 2]
+        road = c.section.half_width + c.section.shoulder
+        np.testing.assert_array_equal(col[np.abs(y) <= road - 0.01], rd.Detail.ROAD)
+        between = (np.abs(y) > road + 0.01) & (np.abs(y) < c.reach - 0.01)
+        np.testing.assert_array_equal(col[between], rd.Detail.VERGE)
+        np.testing.assert_array_equal(col[np.abs(y) > c.reach + 0.01], rd.Detail.OUTSIDE)
+
+
 class Measures(unittest.TestCase):
     def test_wk_weighting(self):
         """ISO 2631-1's Wk: about 1 at 4-8 Hz, about 0.5 at 1 Hz and 16 Hz."""

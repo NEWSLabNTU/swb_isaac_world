@@ -315,26 +315,38 @@ class _Car:
 class MeshStream:
     """The detail's render mesh, no collision: a USD mesh per tile within `reach` m of a
     vehicle, from the tile's own samples (question 3: one road for wheels, cameras and lidar),
-    removed again when no vehicle is near. Once a frame (`update`)."""
+    removed again when no vehicle is near. Once a frame (`update`).
+
+    A tile's mesh covers only the corridors' reach (`Detail.zones_tile`), so beyond it the
+    world's own ground shows, not a level sheet of the detail's laid over it; its faces are
+    two subsets, "road" (carriageway and shoulder) and "verge" (foreslope, ditch, backslope),
+    each bound to `looks[name]` (a material's path) when given."""
 
     ROOT = "/World/RoadDetail"
+    SUBSETS = ("road", "verge")
 
-    def __init__(self, stage, layer, reach=40.0):
+    def __init__(self, stage, layer, reach=40.0, looks=None):
         self.stage, self.layer, self.reach = stage, layer, reach
+        self.looks = dict(looks or {})
         self.meshes = {}
         self.ms = []
         self._faces = None  # the tiles' quads, the same for every tile
 
     def faces(self):
+        """Every quad of a tile's grid, (n * n, 4) vertex indices, row by row."""
         if self._faces is None:
-            from pxr import Vt
-
             n = self.layer.detail.n
             a = (np.arange(n)[None, :] + (n + 1) * np.arange(n)[:, None]).ravel()
-            idx = np.stack([a, a + 1, a + n + 2, a + n + 1], axis=1).ravel().astype(np.int32)
-            self._faces = (Vt.IntArray.FromNumpy(idx),
-                           Vt.IntArray.FromNumpy(np.full(n * n, 4, np.int32)))
+            self._faces = np.stack([a, a + 1, a + n + 2, a + n + 1], axis=1).astype(np.int32)
         return self._faces
+
+    def tile_faces(self, zones):
+        """The quads the tile's mesh keeps (every corner within a corridor's reach) and, of
+        those, which are road (a corner on the carriageway or shoulder): (quads, road mask)."""
+        q = self.faces()
+        z = zones.ravel()[q]
+        keep = (z > 0).all(axis=1)
+        return q[keep], (z[keep] == rd.Detail.ROAD).any(axis=1)
 
     def update(self, points):
         import time
@@ -352,15 +364,29 @@ class MeshStream:
             t0 = time.perf_counter()
             h = d.surface_tile(*key)
             i, j = key
+            quads, road = self.tile_faces(d.zones_tile(i, j))
+            if not len(quads):
+                continue
             gx, gy = np.meshgrid(i * t + np.arange(n + 1) * s - self.layer.ox,
                                  j * t + np.arange(n + 1) * s - self.layer.oy)
             pts = np.stack([gx, gy, h], axis=-1).reshape(-1, 3).astype(np.float32)
             path = f"{self.ROOT}/t_{i}_{j}".replace("-", "m")
             m = UsdGeom.Mesh.Define(self.stage, path)
             m.CreatePointsAttr(Vt.Vec3fArray.FromNumpy(pts))
-            idx, counts = self.faces()
-            m.CreateFaceVertexIndicesAttr(idx)
-            m.CreateFaceVertexCountsAttr(counts)
+            m.CreateFaceVertexIndicesAttr(Vt.IntArray.FromNumpy(quads.ravel()))
+            m.CreateFaceVertexCountsAttr(Vt.IntArray.FromNumpy(np.full(len(quads), 4, np.int32)))
+            for name, mask in zip(self.SUBSETS, (road, ~road)):
+                faces = np.flatnonzero(mask).astype(np.int32)
+                if not len(faces):
+                    continue
+                sub = UsdGeom.Subset.CreateGeomSubset(
+                    m, name, UsdGeom.Tokens.face, Vt.IntArray.FromNumpy(faces),
+                    "materialBind", UsdGeom.Tokens.nonOverlapping)
+                if name in self.looks:
+                    from pxr import UsdShade
+
+                    UsdShade.MaterialBindingAPI.Apply(sub.GetPrim()).Bind(
+                        UsdShade.Material(self.stage.GetPrimAtPath(self.looks[name])))
             self.meshes[key] = path
             self.ms.append((time.perf_counter() - t0) * 1e3)
 

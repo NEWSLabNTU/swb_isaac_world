@@ -417,6 +417,25 @@ class Detail:
             base = np.where(near.reshape(X.shape), c.base_z(u).reshape(X.shape), base)
         return base + self.tile_of(i, j)
 
+    OUTSIDE, VERGE, ROAD = 0, 1, 2
+
+    def zones_tile(self, i, j):
+        """What each of the tile's samples is, as `surface_tile`'s grid: ROAD on a corridor's
+        carriageway or shoulder, VERGE over the rest of its section (foreslope, ditch,
+        backslope), OUTSIDE beyond every corridor's reach, where the world's own ground is. The
+        render mesh covers only the corridors, and dresses the road and the verge apart."""
+        n, d = self.n, self.spacing
+        X, Y = np.meshgrid(i * self.tile + np.arange(n + 1) * d,
+                           j * self.tile + np.arange(n + 1) * d)
+        out = np.zeros(X.shape, dtype=np.int8)
+        for c in self.corridors:
+            _, v, near = c.uv(X, Y)
+            v, near = v.reshape(X.shape), near.reshape(X.shape)
+            road = near & (np.abs(v) <= c.section.half_width + c.section.shoulder)
+            out = np.maximum(out, np.where(road, self.ROAD, np.where(near, self.VERGE,
+                                                                     self.OUTSIDE)))
+        return out
+
     def tile_of(self, i, j):
         with self.lock:
             t = self.tiles.pop((i, j), None)

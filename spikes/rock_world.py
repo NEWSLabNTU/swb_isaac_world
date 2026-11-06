@@ -186,27 +186,35 @@ if RECORD:  # world.py's light and the ego's catalogue body, for the cameras
     UsdLux.DomeLight.Define(stage, "/World/sky").CreateIntensityAttr(600.0)
     from pxr import Sdf, UsdShade
 
-    def look(path, colour, rough):  # a plain surface for the cameras, bound to a subtree
-        mat = UsdShade.Material.Define(stage, f"/World/Looks/{path.strip('/').replace('/', '_')}")
+    def look(name, colour, rough, bind=None):
+        """A plain surface for the cameras, its material's path; bound to the subtree `bind`."""
+        mat = UsdShade.Material.Define(stage, f"/World/Looks/{name}")
         sh = UsdShade.Shader.Define(stage, f"{mat.GetPath()}/shader")
         sh.CreateIdAttr("UsdPreviewSurface")
         sh.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(Gf.Vec3f(*colour))
         sh.CreateInput("roughness", Sdf.ValueTypeNames.Float).Set(rough)
         mat.CreateSurfaceOutput().ConnectToSource(sh.ConnectableAPI(), "surface")
-        prim = stage.DefinePrim(path) if not stage.GetPrimAtPath(path) else stage.GetPrimAtPath(path)
-        UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+        if bind:
+            prim = stage.GetPrimAtPath(bind) or stage.DefinePrim(bind)
+            UsdShade.MaterialBindingAPI.Apply(prim).Bind(mat)
+        return str(mat.GetPath())
 
-    # grass beyond the road: a picture-only plane a little under the base, which is hidden
-    # (the base and the road's render mesh coincide on the flat and would fight)
+    # grass beyond the road: picture-only strips either side of the corridors, from 0.5 m
+    # inside the detail mesh's outer edge (where it is back at the base's level) outwards, 1 cm
+    # under the base. The base itself is hidden: the detail's mesh and it would fight where
+    # they coincide.
     UsdGeom.Imageable(base.GetPrim()).MakeInvisible()
+    e = min(c.reach for c in corridors) - 0.5
     grass = UsdGeom.Mesh.Define(stage, "/World/env/grass")
-    grass.CreatePointsAttr([Gf.Vec3f(x0, -400, -0.04), Gf.Vec3f(x1, -400, -0.04),
-                            Gf.Vec3f(x1, 400, -0.04), Gf.Vec3f(x0, 400, -0.04)])
-    grass.CreateFaceVertexIndicesAttr([0, 1, 2, 3])
-    grass.CreateFaceVertexCountsAttr([4])
-    look("/World/env/grass", (0.20, 0.24, 0.13), 0.95)
-    look(road_layer.MeshStream.ROOT, (0.42, 0.36, 0.28), 0.9)  # the gravel road
-    look(rock_layer.ROOT, (0.30, 0.29, 0.28), 0.8)  # rocks
+    grass.CreatePointsAttr([Gf.Vec3f(x, y, -0.01) for y0, y1 in ((-400.0, -e), (e, 400.0))
+                            for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1))])
+    grass.CreateFaceVertexIndicesAttr(list(range(8)))
+    grass.CreateFaceVertexCountsAttr([4, 4])
+    grass_look = look("grass", (0.20, 0.24, 0.13), 0.95, bind="/World/env/grass")
+    # the detail's mesh: gravel on the carriageway and shoulder, grass over the ditches
+    meshes.looks = {"road": look("gravel", (0.42, 0.36, 0.28), 0.9),
+                    "verge": grass_look}
+    look("rock", (0.30, 0.29, 0.28), 0.8, bind=rock_layer.ROOT)  # rocks
     asset = vehicle_assets.VehicleAssets().get(ego_model(rig))
     if asset is not None:
         vehicle_assets.add_ego_body(stage, veh.path, asset,
