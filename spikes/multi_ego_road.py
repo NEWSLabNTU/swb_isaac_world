@@ -4,6 +4,8 @@
         [<out dir>]
     # ROAD_TOWN=road_town/flat/surfaces.yaml: the same Town01 without the road detail (baseline)
     # ROAD_SPEED=11.1: m/s; ROAD_CASES=one,side,lane: the cases, in this order
+    # ROAD_MESH=0: no render mesh; ROAD_ROCKS=0: no rock stream (what each costs)
+    # ROAD_PROFILE=1: the frame's parts (Isaac's step, the surface layer's calls)
     # prints one SPIKE-RESULT json
 
 The budget's own measure (066 "The budget"; 052 step 5's 29.2 ms for one ego): aib egos in one
@@ -80,6 +82,12 @@ rs = surface.road_rocks
 print(f"ROAD {SURFACES}: detail {road is not None}, rocks {rs is not None}, load {load_s:.1f} s",
       flush=True)
 
+if os.environ.get("ROAD_MESH") == "0" and getattr(surface, "road_meshes", None) is not None:
+    surface.road_meshes.update = lambda *a, **k: None  # no render mesh: what sensors pay for it
+    print("ROAD render mesh off", flush=True)
+if os.environ.get("ROAD_ROCKS") == "0" and rs is not None:
+    rs.update = lambda *a, **k: None  # no rock or collision-tile streaming
+    print("ROAD rock stream off", flush=True)
 # the road's share of a frame: its contact (per substep, RoadLayer.cost_ms) and the streams
 stream_ms = [0.0]
 for obj, name in ((rs, "update"), (getattr(surface, "road_meshes", None), "update")):
@@ -94,6 +102,25 @@ for obj, name in ((rs, "update"), (getattr(surface, "road_meshes", None), "updat
         finally:
             stream_ms[0] += (time.perf_counter() - t) * 1e3
     setattr(obj, name, timed)
+
+# ROAD_PROFILE=1: each part of the world server's frame, ms summed per frame
+PARTS = {}
+if os.environ.get("ROAD_PROFILE") == "1":
+    def _timed(obj, name, key):
+        inner = getattr(obj, name)
+
+        def call(*a, **k):
+            t = time.perf_counter()
+            try:
+                return inner(*a, **k)
+            finally:
+                PARTS[key] = PARTS.get(key, 0.0) + (time.perf_counter() - t) * 1e3
+        setattr(obj, name, call)
+    _timed(world.world, "step", "isaac_step")  # PhysX, and the render on the last substep
+    for _n in ("place", "update", "begin_step", "flush"):
+        _timed(surface, _n, "surface_" + _n)
+    if road is not None:
+        _timed(road, "before_substep", "road_contact")
 
 next_handle = [100]
 
@@ -130,7 +157,7 @@ def yaw_of(q):
 
 def drive(egos, max_t=60.0):
     frames, road_ms, t = [], [], 0.0
-    awake, prims = [], []
+    awake, prims, parts = [], [], []
     ends = {}
     wb = world.ego_rig.vehicle.wheel_base
     while t < max_t and any(e.state.position[0] > END_X for _, e, _, _ in egos):
@@ -147,6 +174,7 @@ def drive(egos, max_t=60.0):
                 ends.setdefault(h, ("left", [round(float(p), 1) for p in e.state.position]))
         c0 = len(road.cost_ms) if road is not None else 0
         stream_ms[0] = 0.0
+        PARTS.clear()
         t0 = time.perf_counter()
         world.step({}, SUBSTEPS, DT, False, sim_time=t)
         dt_ms = (time.perf_counter() - t0) * 1e3
@@ -154,11 +182,13 @@ def drive(egos, max_t=60.0):
         if min(e.state.position[0] for _, e, _, _ in egos) < X0 - SKIP_X:
             frames.append(dt_ms)
             road_ms.append(stream_ms[0] + (sum(road.cost_ms[c0:]) if road is not None else 0.0))
+            parts.append(dict(PARTS, frame=dt_ms))
             if rs is not None:
                 awake.append(rs.awake())
                 prims.append(sum(p is not None for p in rs.paths))
     for h, e, _, _ in egos:
         ends.setdefault(h, ("end", [round(float(p), 1) for p in e.state.position]))
+    drive.parts = parts
     return frames, road_ms, awake, prims, ends, t
 
 
@@ -192,6 +222,9 @@ for name in CASES:
                         "over_50": int(sum(f > 50 for f in frames))},
            "road_ms": {"p50": pct(road_ms, 50), "p95": pct(road_ms, 95)},
            "ends": {str(h): v for h, v in ends.items()}}
+    if drive.parts and len(drive.parts[0]) > 1:
+        keys = sorted({k for p in drive.parts for k in p})
+        out["parts_p50_ms"] = {k: pct([p.get(k, 0.0) for p in drive.parts], 50) for k in keys}
     if rs is not None:
         out.update({"awake": {"p50": int(np.median(awake)), "max": int(max(awake))},
                     "rock_prims_p50": int(np.median(prims)), "lost": lost_rocks(),

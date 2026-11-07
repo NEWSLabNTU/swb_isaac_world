@@ -44,6 +44,7 @@ from . import rocks as rk
 log = logging.getLogger("swb_isaac_world")
 
 PX_EXTRA = 0.10  # m of PhysX travel beyond the spec's (R2)
+SCALE_STEP = 0.01  # the friction scale's step (as roll_bars')
 FILE = "road_detail.yaml"
 REACH = 48.0  # m ahead of a vehicle whose tiles are made in the worker
 LEAD_S = 4.0  # s: at speed, the tiles of the next 4 s (a busy host delays the worker)
@@ -189,7 +190,11 @@ class RoadLayer:
 
     def scale(self, path, i):
         car = self.cars.get(path)
-        return 1.0 if car is None or car.scale is None else float(car.scale[i])
+        if car is None or car.scale is None:
+            return 1.0
+        # in steps of SCALE_STEP: aib writes a wheel's friction to USD only when it moves, and
+        # on a large stage each write costs PhysX's next step a Fabric update
+        return round(float(car.scale[i]) / SCALE_STEP) * SCALE_STEP
 
     def reset(self, path):
         car = self.cars.get(path)
