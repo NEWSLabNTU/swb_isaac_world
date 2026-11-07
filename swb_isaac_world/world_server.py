@@ -101,6 +101,9 @@ def main(argv=None):
     ap.add_argument("--follow", action="store_true",
                     help="with --display: the viewport follows the ego from behind, no UI "
                          "(for watching or recording a run)")
+    ap.add_argument("--ui", action="store_true",
+                    help="with --follow: keep Isaac's editor UI and full-size render (a demo "
+                         "that shows the editor)")
     ap.add_argument("--world", default="",
                     help="worlds to load and render before serving, comma separated: world "
                          "files, map directories or USD files (a first render compiles the "
@@ -166,7 +169,7 @@ def main(argv=None):
     # Host-specific Kit settings (a host setting, ISAAC_KIT_ARGS): e.g. one GPU on a host
     # whose other GPU is busy, "--/renderer/multiGpu/enabled=false --/renderer/activeGpu=1".
     config["extra_args"] += os.environ.get("ISAAC_KIT_ARGS", "").split()
-    if args.display and args.follow:
+    if args.display and args.follow and not args.ui:
         # A small render keeps the frame inside its 50 ms beside the lidar (1080p: 49.5 ms
         # p50 on a loaded host, 720p: 52); the window scales it up.
         config.update(hide_ui=True, width=854, height=480, window_width=1920,

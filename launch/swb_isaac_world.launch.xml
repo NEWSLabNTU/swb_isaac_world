@@ -7,7 +7,7 @@
 
     play_launch launch FLAGS \
         swb_isaac_world swb_isaac_world.launch.xml [ego:=default|none|<yaml>] \
-        [world:=<world>[,<world>...]] [follow:=true] [render:=auto|window|headless] [record:=<dir>]
+        [world:=<world>[,<world>...]] [follow:=true|editor] [render:=auto|window|headless] [record:=<dir>]
         [record_view:=offroad|road] [physics_hz:=60]
 
     FLAGS are the play_launch options web-addr 127.0.0.1:<SWB_WEB_PORT+5> (8085) and log-dir play_log/isaac
@@ -31,7 +31,7 @@
   <arg name="world" default="none"
        description="worlds to preload, comma separated: world files (map/isaac/world.yaml), map directories or USD files; the first stays loaded; none: nothing"/>
   <arg name="follow" default="false"
-       description="true: with a window, no UI and a viewport chasing the ego"/>
+       description="true: with a window, no UI and a viewport chasing the ego; editor: the chase with Isaac's editor UI kept; false: the editor's own camera"/>
   <arg name="record" default=""
        description="a directory for each scenario's first ego's dash and wheel pictures and soil state (a video's); empty: none"/>
   <arg name="record_view" default="offroad"

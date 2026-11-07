@@ -702,7 +702,14 @@ class IsaacWorld(WorldBase):
             if model and model != own_model and self.vehicle_assets.by_id.get(model):
                 log.warning("ego %r: the scenario names %s, the ego's rig is %s: it wears "
                             "%s", name, model, own_model, own_model)
-            asset = self.vehicle_assets.get(own_model)
+            if self.ego_config is not None and self.ego_config.body:
+                # The ego config's own body (an entry.json beside a car kept in another
+                # repository, aib's `body:`), as aib's stand-alone runner dresses it.
+                from aib.isaac.body import load_entry
+
+                asset = load_entry(self.ego_config.body)
+            else:
+                asset = self.vehicle_assets.get(own_model)
             if asset is not None:
                 # Its wheels go on the PhysX wheels: only a car of the ego's own wheelbase fits.
                 wb, own = asset.get("wheel_base") or 0.0, ego.vehicle.p.wheel_base
