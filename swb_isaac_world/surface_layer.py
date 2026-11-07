@@ -40,7 +40,7 @@ import logging
 import math
 import os
 
-from . import road_layer, soil, surfaces
+from . import road_layer, roll_bars, soil, surfaces
 
 log = logging.getLogger("swb_isaac_world")
 
@@ -120,6 +120,8 @@ class SurfaceLayer:
         self.driven = False  # a wheel has driven on the soil since then
         self.saved = True  # nothing driven since the last save
         self.road = None  # road_layer.RoadLayer, with `road_meshes` its render mesh
+        # 066 R5: the car's anti-roll bars where the road layer (whose corner has them) is off
+        self.bars = roll_bars.RollBars(apply_force)
         self.road_meshes = None
         self.road_rocks = None  # rock_layer.RockStream: the road's rocks' prims (R4)
         self.mu = {}  # (vehicle path, wheel) -> the friction the surface gives, before the road's
@@ -190,8 +192,8 @@ class SurfaceLayer:
                 self.side_force.pop((vehicle.path, i), None)
             mu = ws.update(i, s, self.condition, speed, w.slip, dt, target, w.slip_angle)
             self.mu[(vehicle.path, i)] = mu
-            if self.road is not None:
-                mu *= self.road.scale(vehicle.path, i)
+            mu *= (self.road.scale(vehicle.path, i) if self.road is not None
+                   else self.bars.scale(vehicle.path, i))
             vehicle.set_wheel_friction(i, mu)
             vehicle.set_wheel_stiffness(i, *ws.stiffness[i])
             if s is not None and self.logged.get((vehicle.path, i)) != s:
@@ -219,6 +221,13 @@ class SurfaceLayer:
                     mu = self.mu.get((v.path, i))
                     if mu is not None:
                         v.set_wheel_friction(i, mu * self.road.scale(v.path, i))
+        else:
+            self.bars.before_substep(vehicles)
+            for v in vehicles:
+                for i in range(len(v.wheel_paths)):
+                    mu = self.mu.get((v.path, i))
+                    if mu is not None:
+                        v.set_wheel_friction(i, mu * self.bars.scale(v.path, i))
         if not self.tiles:
             return
         wheels = {}

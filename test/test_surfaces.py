@@ -506,7 +506,10 @@ class FakeVehicle:
         self.p = SimpleNamespace(tire_friction=1.0, friction_vs_slip=VEHICLE_GRAPH,
                                  wheel_radius=0.37, wheel_width=0.235,
                                  min_lateral_slip_denominator=1.0,
-                                 min_active_slip_denominator=4.0, **vars(RIG))
+                                 min_active_slip_denominator=4.0,
+                                 suspension=lambda: (((430.0, 30000.0, 3000.0),
+                                                      (450.0, 32000.0, 3200.0)), 0.14),
+                                 suspension_travel=0.2, wheel_mass=20.0, **vars(RIG))
         self.contacts = contacts
         self.wheel_states = [SimpleNamespace(slip=0.0, slip_angle=0.0, rotation_speed=0.0)] * 4
         self.written = {}
