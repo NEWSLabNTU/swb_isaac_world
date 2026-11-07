@@ -22,12 +22,15 @@ its parent's (issue 030). Rocks collide with the world's ground as they do with 
 a loose one is placed only where the detail is no more than rocks.LOOSE_BELOW under the base
 (`rocks.place`), so it rests where the surface is.
 """
+import logging
 import math
 import time
 
 import numpy as np
 
 from . import rocks as rk
+
+log = logging.getLogger("swb_isaac_world")
 
 COLLISION_REACH = 32.0  # m around a vehicle with collision tiles
 COLLISION_STEP = 2  # every second 5 cm sample: 10 cm (p99 2.5 mm from the tire's height)
@@ -78,6 +81,11 @@ class RockStream:
         from pxr import Sdf, UsdGeom, UsdPhysics, Vt
 
         self.stage, self.layer, self.physx = stage, layer, physx
+        # The vehicles' own groups first (issue 039): aib makes chassis and groundQuery only
+        # when the groups' scope is missing, and the world loads the road before any ego.
+        from aib.isaac.vehicle import ensure_vehicle_scene
+
+        ensure_vehicle_scene(stage)
         self.rock_g, self.detail_g = f"{groups}/rocks", f"{groups}/roadDetail"
         # a tile's static rocks, as the rocks are but a group of their own: one edited each tile
         # the window moves is a change of its whole includes to omni.physx, which with the
@@ -123,6 +131,7 @@ class RockStream:
         self.pending = {}  # group -> (paths to add, paths to drop) at the frame's end
         self.serial = 0
         self.made, self.reused, self.prewarmed = 0, 0, 0
+        self.reserved, self.reserved_for, self.prewarm_ms = {}, 0, []  # reserve()'s
         self.coll_ms, self.prim_ms = [], []
         if prewarm:
             self.prewarm()
@@ -352,31 +361,45 @@ class RockStream:
     def prewarm(self, quantile=0.99):
         """Parked prims for the loose rocks one vehicle meets, made now (at the road's load)
         rather than mid-drive: a prim made is 1-1.5 ms of a live frame (R4: 80 km/h from a
-        cold pool 9.2 ms over the road without rocks, from a warm one 3.9). Per prototype and
-        size, the `quantile` of the Poisson count Golombek and Rapp's law gives the band a
-        vehicle's window holds (`expected_window`); a rock beyond it makes its prim live, as
-        before. Returns the number made."""
+        cold pool 9.2 ms over the road without rocks, from a warm one 3.9). `reserve(1)`.
+        Returns the number made."""
+        return self.reserve(1, quantile)
+
+    def reserve(self, vehicles, quantile=0.99):
+        """The pool topped up for `vehicles` rock windows: per prototype and size, the
+        `quantile` of the Poisson count Golombek and Rapp's law gives that many windows
+        (`expected_window` each; windows that overlap need fewer, so this is the most).
+        Called at the road's load for one vehicle and again as each ego spawns; makes only
+        what the last call did not. A rock beyond the pool makes its prim live, as before.
+        Returns the number made; `prewarm_ms` keeps each call's wall time."""
         from scipy.stats import poisson
 
+        t0 = time.perf_counter()
         lam = expected_window(self.layer.detail)
         n = 0
         protos = rk.prototypes()
         for d, x in lam.items():
-            per = x / rk.PROTOTYPES
+            per = vehicles * x / rk.PROTOTYPES
             want = int(poisson.ppf(quantile, per))
             s = 2 * d / (1 + rk.AXES[1])
             for k in range(rk.PROTOTYPES):
                 if protos[k].mass * s ** 3 > rk.DYNAMIC_MAX_KG:
                     continue
                 r = rk.scaled(k, s)
-                for _ in range(want):
+                key = (r.proto, r.scale)
+                for _ in range(want - self.reserved.get(key, 0)):
                     path = self._new_prim(r, (0.0, 0.0, PARK_Z), (1.0, 0.0, 0.0, 0.0))
                     self._park(path)
-                    self.pool.setdefault((r.proto, r.scale), []).append(path)
+                    self.pool.setdefault(key, []).append(path)
                     n += 1
+                self.reserved[key] = max(want, self.reserved.get(key, 0))
         self._flush_groups()
-        self.made = 0  # the drive's count, not the load's
-        self.prewarmed = n
+        self.made -= n  # the drive's count, not the pool's
+        self.prewarmed += n
+        self.reserved_for = max(vehicles, self.reserved_for)
+        self.prewarm_ms.append((time.perf_counter() - t0) * 1e3)
+        log.info("rock pool: %d prims for %d vehicle(s) in %.0f ms (%d in all)", n, vehicles,
+                 self.prewarm_ms[-1], self.prewarmed)
         return n
 
     # --- awake and asleep --------------------------------------------------------------------

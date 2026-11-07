@@ -1,0 +1,14 @@
+# Roadmap 066 R4/R5 acceptance (multi_ego_road.py): R3's rough gravel road with R4's rocks on
+# Town01's straight at y -131 (x 95-345, between the junctions), both lanes. Class C, ruts,
+# potholes, a washboard zone and water bars as R3's test corridor; the carriageway's rock cover
+# raised to 1 % as in R4's third slice, so the cars meet rocks. The world's own road is the base.
+corridors:
+  - centreline: [[345.0, -131.1], [95.0, -131.1]]
+    seed: 66
+    roughness: {cls: C}
+    section: {half_width: 3.0, crown: 0.03, shoulder: 0.5}
+    ruts: {}
+    potholes: {per_100m: 2.5}
+    washboard: [{u0: 120, u1: 170, height: 0.02, pitch: 0.7}]
+    water_bars: {at: [60, 200]}
+    rocks: {carriageway: 0.01, shoulder: 0.01, ditch: 0.03}

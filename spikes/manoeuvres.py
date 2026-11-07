@@ -185,6 +185,11 @@ class TruthEstimator:
                         sum(v.friction_values) / len(v.friction_values))
 
 
+if os.environ.get("ROAD_BARS") == "0":  # 066 R5: the road layer's corner without its bars
+    from swb_isaac_world import road_contact as _rc
+    _bars = _rc.anti_roll_bars
+    _rc.anti_roll_bars = lambda *a, **k: _bars(*a, **{**k, "share": 0.0})
+    log.info("road layer: anti-roll bars off")
 P = world.ego_rig.vehicle
 L = P.wheel_base
 world.preload(usd)
@@ -278,10 +283,16 @@ def tires(v, ws, cp):
     """Each wheel's tire: PhysX's force (along, across), slips, load, the surface layer's
     stiffness shares and share of the peak (054 T1)."""
     out = []
+    # 066 R5: on a road-layer world the tire's load is the corner model's (PhysX's friction is
+    # scaled by it over PhysX's own), so force over load compares with PhysX alone's
+    road = surface.road if surface is not None else None
+    car = road.cars.get(v.path) if road is not None else None
+    ours = car.last_out["load"] if car is not None and car.last_out is not None else None
     for i, w in enumerate(v.wheel_states or ()):
         c = cp[i] if cp else None
+        fz = float(ours[i]) if ours is not None else (c.load if c and c.on_ground else 0.0)
         out.append({"fx": round(w.force[0], 1), "fy": round(w.force[1], 1),
-                    "fz": round(c.load, 1) if c and c.on_ground else 0.0,
+                    "fz": round(fz, 1),
                     "kappa": round(w.slip, 4), "alpha": round(w.slip_angle, 4),
                     "friction": round(v.friction_values[i], 4),
                     "stiffness": [round(x, 3) for x in ws.stiffness[i]] if ws else None,

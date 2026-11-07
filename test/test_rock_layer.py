@@ -120,3 +120,29 @@ class Prewarm(unittest.TestCase):
         window = 2 * rock_layer.ROCK_REACH + d.tile
         per = len(loose) / (2000.0 / window)
         self.assertAlmostEqual(per, sum(lam.values()), delta=0.2 * sum(lam.values()))
+
+    def test_reserve_tops_up_per_vehicle(self):
+        """Each ego that spawns tops the pool up; a call for as many as before adds nothing.
+        Two windows' 99 % count is more than one's and less than twice it (the counts pool)."""
+        from swb_isaac_world import road_detail as rd
+
+        c = rd.Corridor(np.array([[0.0, 0.0], [2000.0, 0.0]]), seed=5,
+                        roughness=rd.Roughness(cls="C"), rocks=rk.Zones(carriageway=0.01))
+        s = rock_layer.RockStream.__new__(rock_layer.RockStream)
+        s.layer = SimpleNamespace(detail=rd.Detail([c]))
+        s.pool, s.reserved, s.reserved_for, s.prewarm_ms = {}, {}, 0, []
+        s.made, s.prewarmed, s.serial = 0, 0, 0
+        s._new_prim = lambda r, pos, quat: (setattr(s, "made", s.made + 1),
+                                            setattr(s, "serial", s.serial + 1),
+                                            f"/p{s.serial}")[-1]
+        s._park = s._flush_groups = lambda *a: None
+        one = s.prewarm()
+        self.assertGreater(one, 0)
+        self.assertEqual(s.reserve(1), 0)
+        two = s.reserve(2)
+        self.assertGreater(two, 0)
+        self.assertLessEqual(two, one)
+        self.assertEqual(s.prewarmed, one + two)
+        self.assertEqual(sum(len(v) for v in s.pool.values()), one + two)
+        self.assertEqual(s.made, 0)  # the pool is not the drive's count
+        self.assertEqual(s.reserved_for, 2)

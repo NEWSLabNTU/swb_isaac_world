@@ -722,6 +722,9 @@ class IsaacWorld(WorldBase):
             self.reporters.add(handle)
             self.egos[handle] = ego
             self.entities[handle] = (path, None, None)
+            if self.surface is not None and self.surface.road_rocks is not None:
+                # 066 R4: a rock window per ego, its pool made now rather than mid-drive
+                self.surface.road_rocks.reserve(len(self.egos))
             self.by_path[path] = handle
             t = time.perf_counter()
             def warm_step():
