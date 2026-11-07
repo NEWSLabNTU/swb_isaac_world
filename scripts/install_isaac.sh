@@ -5,6 +5,11 @@
 set -eu
 I=${ISAAC_ROOT:-/mnt/disk1/isaac-sim}
 export UV_CACHE_DIR=$I/uv-cache
+# A cache symlink whose target is gone (an ISAAC_ROOT deleted and reinstalled) hangs Kit at
+# start: omni.client loops on mkdir (EEXIST) and stat (ENOENT) at 100 % CPU, silently.
+for c in ~/.cache/ov ~/.local/share/ov ~/.nvidia-omniverse; do
+    if [ -L "$c" ] && [ ! -e "$c" ]; then mkdir -p "$(readlink -m "$c")"; echo "created $(readlink -m "$c") for $c"; fi
+done
 [ -d $I/venv ] || uv venv --python 3.12 $I/venv
 source $I/venv/bin/activate
 uv pip install --upgrade pip
