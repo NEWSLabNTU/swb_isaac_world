@@ -54,7 +54,7 @@ OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
 WORLD = os.path.join(REPO, "data/carla-autoware-bridge/Town01/isaac/world.yaml")
 SURFACES = os.path.join(HERE, os.environ.get("ROAD_TOWN", "road_town/surfaces.yaml"))
 SPEED = float(os.environ.get("ROAD_SPEED", "11.1"))
-CASES = os.environ.get("ROAD_CASES", "one,side,lane").split(",")
+CASES = [c for c in os.environ.get("ROAD_CASES", "one,side,lane").split(",") if c]
 EGO_YAML = os.path.join(REPO, "src/autoware_isaac_bridge/src/aib/config/ego.yaml")
 SUBSTEPS, DT = 3, 1 / 60
 FRAME = SUBSTEPS * DT
@@ -70,6 +70,40 @@ usd, ground = os.path.realpath(w["usd"]), list(w.get("ground_paths") or [])
 assert register([WORLD])
 world = IsaacWorld(ego_config=EGO_YAML, ego_domain=int(os.environ.get("STEP_DOMAIN", "77")),
                    surface_maps={usd: (SURFACES, tuple(w.get("map_origin") or (0.0, 0.0, 0.0)))})
+# issue 039: on a failed spawn, what the stage holds for the ego and the collision groups
+_spawn0 = world._spawn
+
+
+def _spawn_diag(*a, **k):
+    try:
+        return _spawn0(*a, **k)
+    except Exception:
+        from pxr import Usd, UsdPhysics
+        st = world.stage
+        print("DIAG039 spawn failed", flush=True)
+        g = st.GetPrimAtPath("/World/vehicleCollisionGroups")
+        for c in (g.GetChildren() if g else []):
+            inc = UsdPhysics.CollisionGroup(c).GetCollidersCollectionAPI().GetIncludesRel()
+            filt = UsdPhysics.CollisionGroup(c).GetFilteredGroupsRel().GetTargets()
+            print("DIAG039 group", c.GetPath(), "includes", len(inc.GetTargets()) if inc else None,
+                  "filtered", [str(t) for t in filt], flush=True)
+        for prim in Usd.PrimRange(st.GetPrimAtPath(world._ego_path())):
+            apis = [x for x in prim.GetAppliedSchemas() if "Physics" in x or "Vehicle" in x]
+            if apis:
+                print("DIAG039 prim", prim.GetPath(), prim.IsActive(), apis[:6], flush=True)
+        raise
+
+
+world._spawn = _spawn_diag
+if os.environ.get("ROAD_STEP_FIRST") == "1":  # issue 039: PhysX parses the load before an ego
+    _load0 = world.load
+
+    def _load_step(*a, **k):
+        out = _load0(*a, **k)
+        world.world.step(render=False)
+        print("ROAD stepped once after the load", flush=True)
+        return out
+    world.load = _load_step
 world.preload(usd)
 t_load = time.perf_counter()
 world.load(usd, ground)

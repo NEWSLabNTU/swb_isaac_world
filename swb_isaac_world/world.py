@@ -329,6 +329,10 @@ class IsaacWorld(WorldBase):
             # the static world a scenario fails on hitting (issue 033). Rocks stay contacts.
             self.ground = [*self.ground, rock_layer.COLL_ROOT]
             self.ground_cache.clear()
+            # One physics step now, so PhysX takes in the rock pool's parked prims (about a
+            # thousand, one stage edit) before the first ego: made in the same batch, the ego
+            # sometimes got no body (issue 039; 2 of 12 runs, 0 of 8 with this step).
+            self.world.step(render=False)
         log.info("road detail %s: %d corridor(s)%s; the egos' tire contact is the road layer's",
                  path, len(layer.road.detail.corridors),
                  ", with rocks" if layer.road.rocks is not None else "")
