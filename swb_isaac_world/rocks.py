@@ -292,6 +292,12 @@ class RockSet:
         the rock's depth over the tire's whole depth (its share of the tire's load), and the
         depth-weighted gradients of its faces under the tire along the heading and to its
         left (exact, from the hull's planes; at most GRAD_MAX)."""
+        # no rock within reach of any footprint (the common case on a road with 1 % cover):
+        # one grid lookup for all the tires, not one footprint each
+        reach = float(np.max(np.hypot(0.6 * np.asarray(radius, dtype=float),
+                                      0.5 * np.asarray(width, dtype=float))))
+        if not self.near(xy[:, 0], xy[:, 1], margin=reach).size:
+            return [[] for _ in range(len(xy))]
         out = []
         u = np.linspace(-0.6, 0.6, along)
         v = (np.arange(across) + 0.5) / across - 0.5

@@ -6,6 +6,7 @@
     # ROAD_SPEED=11.1: m/s; ROAD_CASES=one,side,lane: the cases, in this order
     # ROAD_MESH=0: no render mesh; ROAD_ROCKS=0: no rock stream (what each costs)
     # ROAD_PROFILE=1: the frame's parts (Isaac's step, the surface layer's calls)
+    # ROAD_PROFILE=2: and the road layer's calls under cProfile (OUT/road_contact.prof)
     # ROAD_KERNEL=numpy: the tire contact in numpy, not the compiled kernel (what it saves)
     # prints one SPIKE-RESULT json
 
@@ -145,7 +146,20 @@ for obj, name in ((rs, "update"), (getattr(surface, "road_meshes", None), "updat
 
 # ROAD_PROFILE=1: each part of the world server's frame, ms summed per frame
 PARTS = {}
-if os.environ.get("ROAD_PROFILE") == "1":
+PROF = None
+if os.environ.get("ROAD_PROFILE") == "2" and road is not None:
+    import cProfile
+    PROF = cProfile.Profile()
+    _bs = road.before_substep
+
+    def _profiled(*a, **k):
+        PROF.enable()
+        try:
+            return _bs(*a, **k)
+        finally:
+            PROF.disable()
+    road.before_substep = _profiled
+if os.environ.get("ROAD_PROFILE") in ("1", "2"):
     def _timed(obj, name, key):
         inner = getattr(obj, name)
 
@@ -278,6 +292,10 @@ for name in CASES:
     res["cases"][name] = out
     print(name, json.dumps(out), flush=True)
 
+if PROF is not None:
+    import pstats
+    PROF.dump_stats(os.path.join(OUT, "road_contact.prof"))
+    pstats.Stats(PROF).sort_stats("tottime").print_stats(30)
 print("SPIKE-RESULT " + json.dumps(res), flush=True)
 with open(os.path.join(OUT, "result.json"), "w") as f:
     json.dump(res, f, indent=1)

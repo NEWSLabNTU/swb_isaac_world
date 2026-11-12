@@ -83,16 +83,38 @@ def _contact(h: wp.array3d(dtype=f64), lift: wp.array2d(dtype=f64),
     across = h.shape[1]
     nd = nq - m + 1
     big_n = d_in.shape[1]
-    # each disc's bottom at each station, the mean across the tire
+    # each disc's bottom at each station, the mean across the tire: the max over the samples
+    # under it of sample + lift, searched outward from the disc's centre (lift falls with the
+    # distance on both sides), stopping where even the row's highest sample could not beat it:
+    # the same max, most of the samples skipped
+    c = (m - 1) // 2
+    reach = wp.max(c, m - 1 - c)
     for i in range(n):
         for t in range(nd):
-            total = f64(0.0)
-            for a in range(across):
-                best = f64(NEG)
-                for u in range(m):
-                    best = wp.max(best, h[i, a, t + u] + lift[i, u])
-                total += best
-            disc[i, t] = total / f64(float(across))
+            disc[i, t] = f64(0.0)
+        for a in range(across):
+            top = f64(NEG)
+            for q in range(nq):
+                top = wp.max(top, h[i, a, q])
+            for t in range(nd):
+                best = h[i, a, t + c] + lift[i, c]
+                for d in range(1, reach + 1):
+                    lo = c - d
+                    hi = c + d
+                    done = 1
+                    if lo >= 0:
+                        if lift[i, lo] + top > best:
+                            done = 0
+                            best = wp.max(best, h[i, a, t + lo] + lift[i, lo])
+                    if hi < m:
+                        if lift[i, hi] + top > best:
+                            done = 0
+                            best = wp.max(best, h[i, a, t + hi] + lift[i, hi])
+                    if done == 1:
+                        break
+                disc[i, t] += best
+        for t in range(nd):
+            disc[i, t] = disc[i, t] / f64(float(across))
     # the effective road on the step's grid
     for i in range(n):
         for kk in range(ns):
