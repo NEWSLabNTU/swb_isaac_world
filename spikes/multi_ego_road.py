@@ -6,6 +6,7 @@
     # ROAD_SPEED=11.1: m/s; ROAD_CASES=one,side,lane: the cases, in this order
     # ROAD_MESH=0: no render mesh; ROAD_ROCKS=0: no rock stream (what each costs)
     # ROAD_PROFILE=1: the frame's parts (Isaac's step, the surface layer's calls)
+    # ROAD_KERNEL=numpy: the tire contact in numpy, not the compiled kernel (what it saves)
     # prints one SPIKE-RESULT json
 
 The budget's own measure (066 "The budget"; 052 step 5's 29.2 ms for one ego): aib egos in one
@@ -68,6 +69,11 @@ with open(WORLD) as f:
     w = yaml.safe_load(f)
 usd, ground = os.path.realpath(w["usd"]), list(w.get("ground_paths") or [])
 assert register([WORLD])
+if os.environ.get("ROAD_KERNEL"):  # the tire contact's kernel for every car
+    from swb_isaac_world import road_contact as _rc
+    _tc_init = _rc.TireContact.__init__
+    _rc.TireContact.__init__ = lambda self, *a, kernel=None, **k: _tc_init(
+        self, *a, kernel=os.environ["ROAD_KERNEL"], **k)
 world = IsaacWorld(ego_config=EGO_YAML, ego_domain=int(os.environ.get("STEP_DOMAIN", "77")),
                    surface_maps={usd: (SURFACES, tuple(w.get("map_origin") or (0.0, 0.0, 0.0)))})
 # issue 039: on a failed spawn, what the stage holds for the ego and the collision groups

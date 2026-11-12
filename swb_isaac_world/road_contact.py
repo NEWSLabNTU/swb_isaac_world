@@ -95,10 +95,12 @@ class Corner:
 class TireContact:
     """The corners of one vehicle (or several: wheels are independent)."""
 
-    def __init__(self, corners, inner=8, bars=()):
+    def __init__(self, corners, inner=8, bars=(), kernel="numpy"):
         """`bars`: anti-roll bars, (left wheel, right wheel, rate N/m of differential travel at
-        the wheel)."""
+        the wheel). `kernel`: "numpy", "warp" (`road_contact_warp`, compiled: the world
+        server's), or "auto": warp where it imports."""
         self.n = n = len(corners)
+        self.du, self.rebound_rate = DU, REBOUND_RATE
         self.inner = inner
         f = lambda name: np.array([getattr(cn, name) for cn in corners], dtype=float)
         self.k, self.c, self.travel = f("k"), f("c"), f("travel")
@@ -135,6 +137,14 @@ class TireContact:
         self.ls = 2 * P_LS * HALF_CONTACT
         self.along = np.linspace(-self.ls / 2, self.ls / 2, CAMS_ALONG)
         self.across = (np.arange(CAMS_ACROSS) + 0.5) / CAMS_ACROSS - 0.5  # shares of width
+        self.warp = None
+        if kernel in ("warp", "auto"):
+            try:
+                from . import road_contact_warp
+                self.warp = road_contact_warp.Kernel(self, G)
+            except ImportError:
+                if kernel == "warp":
+                    raise
 
     def reset(self):
         self.ready = False
@@ -146,10 +156,10 @@ class TireContact:
         u = self.lift_u[None, :]
         return np.where(np.abs(u) <= r, np.sqrt(np.maximum(r * r - u * u, 0.0)) - r, -np.inf)
 
-    def envelope(self, height, xy, heading, span):
-        """The effective road along each wheel's path over the step: s (m along the heading
-        from the contact) on a DU grid from 0 to `span`, the effective height (n, len(s)) and
-        slope (n, len(s))."""
+    def samples(self, height, xy, heading, span):
+        """The road under each wheel's path over the step: s (m along the heading from the
+        contact) on a DU grid from 0 to `span`, the sample stations q along the heading, and
+        the heights h (n, across, len(q))."""
         s = np.arange(0.0, max(span, 0.0) + 2 * DU, DU)
         pad = float(self.lift_u[-1]) + self.ls / 2
         q = np.arange(-pad, s[-1] + pad + 1e-9, DU)  # sample stations along the heading
@@ -160,7 +170,13 @@ class TireContact:
             - hy[:, None, None] * lat[:, :, None]
         py = xy[:, 1, None, None] + hy[:, None, None] * q[None, None, :] \
             + hx[:, None, None] * lat[:, :, None]
-        h = np.asarray(height(px, py), dtype=float)
+        h = np.asarray(height(px, py), dtype=float) * np.ones(px.shape)
+        return s, q, h
+
+    def envelope(self, height, xy, heading, span):
+        """The effective road along each wheel's path over the step: s on a DU grid from 0 to
+        `span` (`samples`), the effective height (n, len(s)) and slope (n, len(s))."""
+        s, q, h = self.samples(height, xy, heading, span)
         m = len(self.lift_u)
         win = np.lib.stride_tricks.sliding_window_view(h, m, axis=2)  # (n, across, nq-m+1, m)
         disc = np.max(win + self._lift()[:, None, None, :], axis=3)  # disc bottom at centres
@@ -191,29 +207,56 @@ class TireContact:
         span = float(np.max(np.abs(speed))) * dt
         sgn = np.where(speed < 0, -1.0, 1.0)
         hd = heading * sgn[:, None]
-        s, w, slope = self.envelope(height, xy, hd, span)
         zb = np.asarray(base(xy[:, 0], xy[:, 1]), dtype=float) * np.ones(n)
         # the base road under each inner step (PhysX's spring follows it)
         d_in = np.abs(speed)[:, None] * (np.arange(1, N + 1) * h)[None, :]
         zb_in = np.asarray(base(xy[:, 0, None] + hd[:, 0, None] * d_in,
                                 xy[:, 1, None] + hd[:, 1, None] * d_in), dtype=float) \
             * np.ones((n, N))
-        if not self.ready:  # the wheel at rest on the road
-            self.zu = w[:, 0] + self.r - self.defl0
-            self.vu = np.zeros(n)
-            self.ready = True
-            self.w_prev = w[:, 0].copy()
-        # What does not depend on our wheel, for every inner step at once (n, N): the road
-        # under the tire, the attachment's height, and PhysX's spring and damper on the base
-        # road (its wheel rigid on the base; no force once its wheel leaves it).
-        W, S = _at(w, d_in), _at(slope, d_in)
-        Wdot = np.diff(np.concatenate([self.w_prev[:, None], W], axis=1), axis=1) / h
+        # What does not depend on our wheel, for every inner step at once (n, N): the
+        # attachment's height, and PhysX's spring and damper on the base road (its wheel rigid
+        # on the base; no force once its wheel leaves it).
         ZA = z_att[:, None] + v_att[:, None] * (np.arange(1, N + 1) * h)[None, :]
         JP = self.px_travel[:, None] + zb_in + self.r[:, None] - ZA
         VB = np.diff(np.concatenate([zb[:, None], zb_in], axis=1), axis=1) / h
         FP = np.where(JP > 0, self.k[:, None] * np.clip(JP, 0, self.px_travel[:, None])
                       + self.c[:, None] * (VB - v_att[:, None]), 0.0)
         FP = np.maximum(FP, 0.0)
+        if self.warp is not None:
+            s, q, hs = self.samples(height, xy, hd, span)
+            m = len(self.lift_u)
+            k = self.warp.run(hs, q[(m - 1) // 2], len(s), d_in, ZA, v_att, h,
+                              0 if self.ready else 1)
+            self.ready = True
+            w, FS, FT, COMP, J, S = k["w"], k["FS"], k["FT"], k["COMP"], k["J"], k["S"]
+        else:
+            s, w, slope = self.envelope(height, xy, hd, span)
+            FS, FT, COMP, J, S = self._wheels(w, slope, d_in, ZA, v_att, h)
+        out = {"dfz": (FS - FP).mean(axis=1), "dfx": -(FT * S).mean(axis=1) * sgn,
+               "load": FT.mean(axis=1), "px_load": FP.mean(axis=1),
+               "airborne": (FT <= 0).mean(axis=1),
+               # the tire's deflection beyond the rim's clearance at its worst, m (> 0: the
+               # rim struck the road: a pinch, a bent rim)
+               "rim_strike": np.maximum(COMP.max(axis=1) - self.rim, 0.0)}
+        out["w"] = w[:, 0]
+        out["load_inner"] = FT  # the tire's force at each inner step, for diagnostics
+        out["susp_inner"] = FS  # the suspension's force on the body at each inner step
+        out["jounce"] = J[:, -1]
+        # PhysX's own jounce at its rigid limit at any inner step (R2: never, on the road)
+        out["px_limit"] = (JP >= self.px_travel[:, None] - 1e-3).any(axis=1)
+        return out
+
+    def _wheels(self, w, slope, d_in, ZA, v_att, h):
+        """Our wheels over the inner steps (numpy): FS, FT, COMP, J and the slope S under each
+        (n, inner); leaves zu, vu, w_prev for the next step."""
+        n, N = d_in.shape
+        if not self.ready:  # the wheel at rest on the road
+            self.zu = w[:, 0] + self.r - self.defl0
+            self.vu = np.zeros(n)
+            self.ready = True
+            self.w_prev = w[:, 0].copy()
+        W, S = _at(w, d_in), _at(slope, d_in)
+        Wdot = np.diff(np.concatenate([self.w_prev[:, None], W], axis=1), axis=1) / h
         FS = np.empty((n, N))
         FT = np.empty((n, N))
         COMP = np.empty((n, N))
@@ -239,19 +282,7 @@ class TireContact:
             self.zu = self.zu + self.vu * h
             FS[:, i], FT[:, i], COMP[:, i] = fs, ft, comp
         self.w_prev = W[:, -1].copy()
-        out = {"dfz": (FS - FP).mean(axis=1), "dfx": -(FT * S).mean(axis=1) * sgn,
-               "load": FT.mean(axis=1), "px_load": FP.mean(axis=1),
-               "airborne": (FT <= 0).mean(axis=1),
-               # the tire's deflection beyond the rim's clearance at its worst, m (> 0: the
-               # rim struck the road: a pinch, a bent rim)
-               "rim_strike": np.maximum(COMP.max(axis=1) - self.rim, 0.0)}
-        out["w"] = w[:, 0]
-        out["load_inner"] = FT  # the tire's force at each inner step, for diagnostics
-        out["susp_inner"] = FS  # the suspension's force on the body at each inner step
-        out["jounce"] = J[:, -1]
-        # PhysX's own jounce at its rigid limit at any inner step (R2: never, on the road)
-        out["px_limit"] = (JP >= self.px_travel[:, None] - 1e-3).any(axis=1)
-        return out
+        return FS, FT, COMP, J, S
 
     def friction_scale(self, load, px_load):
         """The share of the rig's friction each wheel gets so that PhysX's tire, saturating at

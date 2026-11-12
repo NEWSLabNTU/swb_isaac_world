@@ -121,3 +121,47 @@ class CornerForces(unittest.TestCase):
         self.assertAlmostEqual(extra[0], -extra[1], delta=1.0)  # and the other down: no heave
         self.assertLess(np.abs(settle(tc, np.full(2, 0.02)) - settle(free, np.full(2, 0.02))).max(),
                         1.0)  # heave: the bar does nothing
+
+
+try:
+    import importlib
+    importlib.import_module("swb_isaac_world.road_contact_warp")  # Isaac's Python has warp
+    HAVE_WARP = True
+except ImportError:
+    HAVE_WARP = False
+
+
+@unittest.skipUnless(HAVE_WARP, "warp: run under Isaac's Python")
+class WarpTest(unittest.TestCase):
+    """The compiled envelope and wheels are numpy's, to rounding: four corners with bars, a
+    cleat on a rough road, forwards, fast and in reverse, the attachment moving."""
+
+    def test_the_kernels_agree(self):
+        def rough(x, y):
+            return 0.01 * np.sin(7.0 * x) * np.cos(3.0 * y) + 0.004 * np.sin(31.0 * x + y) \
+                + np.where((x >= 10.0) & (x <= 10.2), 0.08, 0.0)
+
+        def base(x, y):
+            return 0.02 * np.asarray(x) + 0.0 * np.asarray(y)
+
+        def make(kernel):
+            corners = [rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH, px_travel=TRAVEL + 0.1)
+                       for _ in range(4)]
+            return rc.TireContact(corners, bars=rc.anti_roll_bars((0, 1), (2, 3), K, K),
+                                  kernel=kernel)
+
+        heading = np.tile([1.0, 0.0], (4, 1))
+        for speed in (8.0, 30.0, -4.0):
+            a, b = make("numpy"), make("warp")
+            x = 6.0 if speed > 0 else 12.0
+            for k in range(240):
+                xy = np.array([[x + 2.9, 0.8], [x + 2.9, -0.8], [x, 0.8], [x, -0.8]])
+                za = np.full(4, R + TRAVEL + 0.02 * x - SAG + 0.01 * np.sin(k / 5.0))
+                va = np.full(4, 0.02 * speed + 0.01 / 5.0 * 60 * np.cos(k / 5.0))
+                oa, ob = (t.step(DT, rough, base, xy, heading, np.full(4, speed), za, va)
+                          for t in (a, b))
+                for key in ("dfz", "dfx", "load", "px_load", "airborne", "rim_strike", "w",
+                            "jounce", "load_inner", "susp_inner"):
+                    np.testing.assert_allclose(ob[key], oa[key], rtol=1e-9, atol=1e-6,
+                                               err_msg=f"{key} at speed {speed}, step {k}")
+                x += speed * DT

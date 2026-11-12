@@ -224,7 +224,8 @@ class _Car:
             [rc.Corner(*(front if f else rear), real, p.wheel_radius, p.wheel_width,
                        px_travel=p.suspension_travel) for f, _ in ORDER],
             bars=rc.anti_roll_bars((sides[(True, 1)], sides[(True, -1)]),
-                                   (sides[(False, 1)], sides[(False, -1)]), front[1], rear[1]))
+                                   (sides[(False, 1)], sides[(False, -1)]), front[1], rear[1]),
+            kernel="auto")
         self.z_att_prev = None
         self.scale = None
         self.plane = None  # (a, b, c): z = a x + b y + c through the hits, then per wheel c_i
