@@ -4,6 +4,7 @@
 #   swb_isaac_world_server --port N --ego <yaml|none> [--ego-domain N] --world <worlds|none>
 #                      --follow <true|false|editor> --render <auto|window|headless> [--record=<dir>]
 #                      [--record-view <offroad|road>] [--physics-hz <Hz>]
+#                      [--state-dir=<dir>] [--wheels-topic <true|false>]
 #                      [--ros-args ...]
 #
 # The world server is Python 3.12 in Isaac's venv with Isaac's own ROS 2 libraries
@@ -15,11 +16,13 @@
 #
 # Environment: SWB_ISAAC_DIR (default: the source tree this package was built from),
 # ISAAC_ROOT, DISPLAY (render auto/window), ISAAC_HEADLESS=1 (render auto: headless),
-# CYCLONEDDS_URI (passed through: the ego stack's DDS).
+# CYCLONEDDS_URI (passed through: the ego stack's DDS), SWB_CARLA_USD (the CARLA USD set's
+# root, for world files that name it and course worlds' props; passed through).
 set -e
 swb_isaac_world="${SWB_ISAAC_DIR:-@SWB_ISAAC_DIR@}"
 aib_ego="$swb_isaac_world/deps/autoware_isaac_bridge/src/aib/config/ego.yaml"
 port=5590; ego=default; ego_domain=0; world=none; follow=false; render=auto; record=""; record_view=offroad; physics_hz=60
+state_dir=""; wheels_topic=true
 while [ $# -gt 0 ]; do
     case "$1" in
         --ros-args) break ;;
@@ -32,6 +35,8 @@ while [ $# -gt 0 ]; do
         --record=*) record="${1#--record=}"; shift ;;
         --record-view) record_view="$2"; shift 2 ;;
         --physics-hz) physics_hz="$2"; shift 2 ;;
+        --state-dir=*) state_dir="${1#--state-dir=}"; shift ;;
+        --wheels-topic) wheels_topic="$2"; shift 2 ;;
         *) echo "swb_isaac_world_server: unknown argument '$1'" >&2; exit 2 ;;
     esac
 done
@@ -52,6 +57,12 @@ case "$follow" in
 esac
 [ -n "$record" ] && args+=(--record "$record" --record-view "$record_view")
 args+=(--physics-hz "$physics_hz")
+[ -n "$state_dir" ] && args+=(--state-dir "$state_dir")
+case "$wheels_topic" in
+    true|1) ;;
+    false|0) args+=(--wheels-topic false) ;;
+    *) echo "swb_isaac_world_server: wheels_topic '$wheels_topic' is not true or false" >&2; exit 2 ;;
+esac
 display="${DISPLAY:-}"
 case "$render" in
     auto) [ -n "${ISAAC_HEADLESS:-}" ] && [ "${ISAAC_HEADLESS}" != 0 ] && display="" ;;

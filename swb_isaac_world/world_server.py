@@ -15,6 +15,11 @@ rendered once before the server answers (roadmap 043: a town's first render comp
 materials, minutes, which a scenario's `LoadWorld` should not have to); the first one listed
 stays loaded. A world file's map directory with a `surfaces.yaml` (roadmap 047) gives that
 world its surface map, checked here before Isaac starts.
+
+A world file's `usd:` may name its stage through the environment (`${SWB_CARLA_USD}/...`), and
+a course world finds its props through `SWB_CARLA_USD` when its `carla-usd` link is absent
+(`names`). With `--state-dir` what the server writes for a map goes to `<state dir>/<map>/`,
+never into the map directory.
 """
 import argparse
 import logging
@@ -22,6 +27,8 @@ import os
 import sys
 import threading
 import time
+
+from . import names
 
 # A world server that cannot go on exits with this (EX_TEMPFAIL, as swb_carla_world's): its
 # launch respawns it fresh. docs/issues/011: one stopped answering after RTX's "Out of
@@ -34,28 +41,25 @@ STARTUP_LIMIT = 1200.0
 
 def world_file(entry):
     """The world file a `--world` entry names (a map directory's `isaac/world.yaml`), or
-    None for a USD file."""
-    path = os.path.abspath(os.path.expanduser(entry))
-    if os.path.isdir(path):
-        path = os.path.join(path, "isaac", "world.yaml")
-    return path if path.endswith((".yaml", ".yml")) else None
+    None for a USD file (`names.world_file`)."""
+    return names.world_file(entry)
 
 
 def world_usd(entry):
-    """The USD stage a `--world` entry names: a world file's `usd` (relative to its map
-    directory, as swb resolves it), a map directory's `isaac/world.yaml`, or a USD file."""
-    path = world_file(entry)
-    if path is None:
-        return os.path.abspath(os.path.expanduser(entry))
-    import yaml
-
-    with open(path) as f:
-        usd = (yaml.safe_load(f) or {}).get("usd", "")
+    """The USD stage a `--world` entry names: a world file's `usd` (names expanded, relative
+    to its map directory, as swb resolves it), a map directory's `isaac/world.yaml`, or a USD
+    file."""
+    try:
+        path = world_file(entry)
+        if path is None:
+            return os.path.abspath(names.expand(entry))
+        usd = names.world_usd_of(path)
+    except names.UnresolvedName as e:
+        raise SystemExit(str(e)) from e
     if not usd:
         raise SystemExit(f"{entry}: the world file names no usd (a flat ground plane needs no "
                          "preload)")
-    map_dir = os.path.dirname(os.path.dirname(path))
-    return usd if os.path.isabs(usd) else os.path.join(map_dir, usd)
+    return usd
 
 
 def preload_list(worlds):
@@ -130,6 +134,13 @@ def main(argv=None):
                          "step at it, and the bridge splits SSv2's step into steps no longer "
                          "than 1 / this (Hello's max_physics_dt). The ego's commands are taken "
                          "once per SSv2 step: a faster controller needs a shorter SSv2 step")
+    ap.add_argument("--state-dir", default="",
+                    help="where the server writes for a map, and a project's own map files: "
+                         "<dir>/<map>/ (ruts, surfaces.yaml, road_detail.yaml; `names`); "
+                         "empty: into the map directory")
+    ap.add_argument("--wheels-topic", default="true", choices=("true", "false"),
+                    help="publish /swb/wheels (`wheels`: each ego wheel's ground and tire "
+                         "state, DiagnosticArray, 20 Hz) on the ego's domain")
     args = ap.parse_args(argv)
     if not args.physics_hz > 0:
         raise SystemExit(f"--physics-hz {args.physics_hz}: a rate > 0")
@@ -149,12 +160,15 @@ def main(argv=None):
     entries = [e.strip() for e in args.world.split(",") if e.strip()]
     try:
         # A world's surface map (<map>/surfaces.yaml, roadmap 047), checked before Isaac starts.
-        surface_maps = register([w for w in map(world_file, entries) if w])
+        surface_maps = register([w for w in map(world_file, entries) if w],
+                                state_dir=args.state_dir or None)
     except SurfaceError as e:
         raise SystemExit(f"surface map refused:\n{e}") from e
-    for usd, (path, _) in surface_maps.items():
-        log.info("surface map %s for %s%s", path, usd,
-                 "" if os.path.exists(path) else " (none yet: looked for at each LoadWorld)")
+    for usd, files in surface_maps.items():
+        log.info("surface map %s for %s%s%s", files.surfaces, usd,
+                 "" if os.path.exists(files.surfaces) else
+                 " (none yet: looked for at each LoadWorld)",
+                 f"; its state in {files.state}" if files.state else "")
     if args.display:
         os.environ["DISPLAY"] = args.display
     else:
@@ -186,7 +200,9 @@ def main(argv=None):
     world = IsaacWorld(physics_dt=1 / args.physics_hz,
                        ego_config=args.ego or None, ego_domain=args.ego_domain or None,
                        follow=bool(args.display and args.follow), surface_maps=surface_maps,
-                       record=args.record or None, record_view=args.record_view)
+                       record=args.record or None, record_view=args.record_view,
+                       state_dir=args.state_dir or None,
+                       wheels_topic=args.wheels_topic == "true")
     # The first listed is preloaded last, so it is the one loaded when the bridge first asks.
     for usd in reversed(preload):
         world.preload(usd)

@@ -24,6 +24,7 @@ ego wheel's friction every substep from the ground under it; in a soil zone the 
 (`soil`) sets it and pushes back on the body.
 """
 import contextlib
+import dataclasses
 import logging
 import math
 import os
@@ -38,12 +39,13 @@ from pxr import Gf, PhysicsSchemaTools, PhysxSchema, Sdf, Usd, UsdGeom, UsdLux, 
 
 from swb_world_server.world import World as WorldBase
 
-from . import motion as body_motion, signals as signal_table, sky as scenario_sky, surfaces
+from . import motion as body_motion, names, signals as signal_table, sky as scenario_sky
+from . import surfaces, wheels as wheel_topic
 from . import vehicle_assets
 from . import walkers as walker_gait
 from .catalogue import check_ego, ego_body, ego_model, load_ego
 from . import road_layer
-from .surface_layer import SurfaceLayer, kinematic_wheels, sink_pose
+from .surface_layer import MapFiles, SurfaceLayer, kinematic_wheels, sink_pose
 
 log = logging.getLogger("swb_isaac_world")
 
@@ -117,17 +119,24 @@ class IsaacWorld(WorldBase):
         return f"Isaac Sim {self.isaac_version}"
 
     def __init__(self, physics_dt=1 / 60, ego_config=None, ego_domain=None, follow=False,
-                 surface_maps=None, record=None, record_view="offroad"):
-        """`surface_maps`: `{usd realpath: (surfaces.yaml, map origin)}`
-        (`surface_layer.register`). `record`: a directory for each scenario's first ego's
-        pictures and soil state (`recorder`), or None; `record_view`: its view
-        (`recorder.VIEWS`)."""
+                 surface_maps=None, record=None, record_view="offroad", state_dir=None,
+                 wheels_topic=True):
+        """`surface_maps`: `{usd realpath: MapFiles}` (`surface_layer.register`; a
+        `(surfaces.yaml, map origin)` pair is one too). `record`: a directory for each
+        scenario's first ego's pictures and soil state (`recorder`), or None; `record_view`:
+        its view (`recorder.VIEWS`). `state_dir`: where the server writes for a map
+        (`names`), or None: into the map directory. `wheels_topic`: publish `/swb/wheels`
+        (`wheels`) on the ego's domain."""
         self.isaac_version = _isaac_version()
         self.follow = follow
         self.record = record
         self.record_view = record_view
         self.recorder = None
-        self.surface_maps = dict(surface_maps or {})
+        self.surface_maps = {k: MapFiles.of(v) for k, v in (surface_maps or {}).items()}
+        self.state_dir = state_dir
+        self.wheels_topic = wheels_topic
+        self.wheels_pub = None  # wheels.Publisher, made with the first ego
+        self.wheels_every = wheel_topic.Decimator(wheel_topic.PERIOD)
         self.surface = None  # SurfaceLayer of the loaded world, if it has a surface map
         self.sky = scenario_sky.Sky()  # the scenario's weather and time of day (047)
         self.sky_moved_at = 0.0  # the clock when an animated time last moved the sun, s
@@ -236,6 +245,8 @@ class IsaacWorld(WorldBase):
         self.latitude = scenario_sky.map_latitude(request.map_dir) \
             if request is not None and request.map_dir else 0.0
         self.projector = self._projector(request)
+        # A world named through the environment (`${SWB_CARLA_USD}/...`, roadmap 076 A9).
+        usd = names.requested_usd(usd, request.map_dir if request is not None else None)
         self._load_env(usd, ground_paths)
         self._load_signals(list(signals))
 
@@ -273,7 +284,14 @@ class IsaacWorld(WorldBase):
             self.stage.RemovePrim(ENVIRONMENT)
         self.loaded_usd = None
         if usd:
-            add_reference_to_stage(usd_path=usd, prim_path=ENVIRONMENT)
+            # A course's props through a `carla-usd` link that is not beside it: from a
+            # stand-in directory in the map's state (`names.staged_world`).
+            entry = self.surface_maps.get(usd)
+            source = names.staged_world(usd, entry.state if entry is not None else None)
+            if source != usd:
+                log.info("world %s: loaded from %s (its carla-usd link, to %s)", usd, source,
+                         names.carla_usd_root())
+            add_reference_to_stage(usd_path=source, prim_path=ENVIRONMENT)
             plane.SetActive(False)
             self.ground = list(ground_paths)
             self.loaded_usd = usd
@@ -297,11 +315,17 @@ class IsaacWorld(WorldBase):
         entry = self.surface_maps.get(usd)
         if entry is None:
             return
-        path, origin = entry
+        path, origin = entry.surfaces, entry.origin
         if os.path.exists(path):
-            self.surface = SurfaceLayer(self.stage, surfaces.load(path), origin,
+            smap = surfaces.load(path)
+            if entry.state:
+                # Ruts saved into the map's state; sets looked for there, then beside the map.
+                smap = dataclasses.replace(smap, ruts_dirs=tuple(
+                    os.path.join(d, surfaces.RUTS_DIR)
+                    for d in (entry.state, entry.map_dir or os.path.dirname(path))))
+            self.surface = SurfaceLayer(self.stage, smap, origin,
                                         self._apply_force, self._make_tiles)
-        self._load_road(os.path.join(os.path.dirname(path), road_layer.FILE), origin)
+        self._load_road(entry.road, origin)
         if not os.path.exists(path):
             return
         log.info("surface map %s: %d zone(s)", path, len(self.surface.map.zones))
@@ -349,8 +373,8 @@ class IsaacWorld(WorldBase):
 
     def _save_ruts(self):
         """The ending scenario's ruts, if a wheel made any, to `<map>/ruts/runs/<time>.npz`
-        (047 D5): a set any later scenario can start from once copied to
-        `<map>/ruts/<name>.npz` (`swb.ruts`)."""
+        (047 D5; `<state dir>/<map>/ruts/runs/` with a state directory): a set any later
+        scenario can start from once copied to `<that ruts dir>/<name>.npz` (`swb.ruts`)."""
         layer = self.surface
         if layer is None or layer.base.path == surfaces.NO_MAP:
             return
@@ -1185,6 +1209,8 @@ class IsaacWorld(WorldBase):
         t1 = time.perf_counter()
         render = render or any(e.renders for e in egos)
         touching = {}  # (handle, other, other path) -> impulse
+        samples = []  # /swb/wheels: (sim time, ego name, wheel rows), at most 20 Hz
+        sample = self.wheels_topic and self.ego_ros is not None and bool(egos)
         for s in range(substeps):
             for ego in egos:
                 ego.before_substep(dt)
@@ -1200,6 +1226,9 @@ class IsaacWorld(WorldBase):
             if self.surface is not None and self.surface.kinematic:
                 self.surface.roll_kinematic((s + 1) / substeps, dt, substeps * dt)
             self._collect_contacts(touching)
+            if sample and self.wheels_every.due(sim_time + (s + 1) * dt):
+                samples += [(sim_time + (s + 1) * dt, ego.name,
+                             wheel_topic.wheel_rows(ego.vehicle, self.surface)) for ego in egos]
         if self.surface is not None:
             self.surface.flush()  # the soil's new ruts, for the next frame
             self._sink_npcs()
@@ -1238,6 +1267,11 @@ class IsaacWorld(WorldBase):
             if self.signal_table and egos:
                 # Every frame, as acb publishes CARLA's lights (044 B).
                 self.ego_ros.publish_signals(self.signal_groups, stamp)
+            if samples:
+                if self.wheels_pub is None:
+                    self.wheels_pub = wheel_topic.Publisher(self.ego_ros.node)
+                for t, name, rows in samples:
+                    self.wheels_pub.publish(name, rows, self.ego_ros.stamp(t))
         t3 = time.perf_counter()
         if t3 - t0 > SLOW_STEP_S:
             log.warning("slow step at sim time %.2f: %.0f ms (commands %.0f, physics and render "

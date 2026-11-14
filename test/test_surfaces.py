@@ -1,10 +1,12 @@
 """The surface layer's map, model and Isaac glue (roadmap 047 S1); no Isaac needed."""
+import dataclasses
 import math
 import sys
 import tempfile
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
+from unittest import mock
 
 import numpy as np
 
@@ -187,6 +189,29 @@ class RutsTest(unittest.TestCase):
             layer.begin_step()
             layer.update(v, 5.0, 1 / 60)
             x += 5.0 / 60
+
+    def test_with_a_state_directory_ruts_go_there_and_sets_are_found_in_both(self):
+        state = Path(self.dir.name) / "state" / "ruts"
+        own = Path(self.dir.name) / "ruts"
+        self.map = dataclasses.replace(self.map, ruts_dirs=(str(state), str(own)))
+        self.assertEqual(surfaces.ruts_dir(self.map), state)
+        layer, _ = self.layer()
+        self.drive(layer)
+        saved = layer.save_ruts(surfaces.ruts_dir(self.map) / "runs")
+        self.assertEqual(saved.parent, state / "runs")
+        self.assertFalse(own.exists())  # nothing written beside the map
+        own.mkdir()
+        (own / "worn.npz").write_bytes(saved.read_bytes())  # the dataset's set
+        (state / "mine.npz").write_bytes(saved.read_bytes())  # the project's
+        self.assertEqual(surfaces.available_ruts(self.map), ["mine", "worn"])
+        self.assertEqual(surfaces.rut_set(self.map, "worn"), own / "worn.npz")
+        again, _ = self.layer()
+        again.set_condition(1.0, "dry", {"swb.ruts": "worn"})
+        self.assertEqual(again.ruts, "worn")
+        with self.assertRaises(SurfaceError) as e:
+            surfaces.road_condition(self.map, 1.0, "dry", {"swb.ruts": "gone"})
+        self.assertIn(str(state), str(e.exception))
+        self.assertIn(str(own), str(e.exception))
 
     def test_a_run_saved_comes_back_as_a_named_set(self):
         layer, _ = self.layer()
@@ -804,7 +829,8 @@ class SurfaceLayerTest(unittest.TestCase):
             (Path(d) / "isaac").mkdir()
             (Path(d) / "isaac" / "world.yaml").write_text(
                 "usd: town.usd\nmap_origin: [1.0, 2.0, 0.0]\n")
-            entry = [(str(Path(d) / "surfaces.yaml"), (1.0, 2.0, 0.0))]
+            entry = [(str(Path(d) / "surfaces.yaml"), (1.0, 2.0, 0.0),
+                      str(Path(d) / "road_detail.yaml"), None, d)]
             # none yet: registered all the same, looked for at each LoadWorld
             got = surface_layer.register([str(Path(d) / "isaac" / "world.yaml")])
             self.assertEqual(list(got.values()), entry)
@@ -814,6 +840,42 @@ class SurfaceLayerTest(unittest.TestCase):
             (Path(d) / "surfaces.yaml").write_text("defaults: {Road: tarmac}\n")
             with self.assertRaises(SurfaceError):
                 surface_layer.register([str(Path(d) / "isaac" / "world.yaml")])
+
+    def test_register_takes_a_projects_files_from_the_state_directory(self):
+        with tempfile.TemporaryDirectory() as d:
+            m = Path(d) / "maps" / "Town01"
+            (m / "isaac").mkdir(parents=True)
+            (Path(d) / "set" / "Town01").mkdir(parents=True)
+            (m / "isaac" / "world.yaml").write_text(
+                "usd: ${SWB_CARLA_USD}/Town01/T.usda\n")
+            (m / "surfaces.yaml").write_text("defaults: {Road: asphalt}\n")
+            state = Path(d) / "state"
+            with mock.patch.dict("os.environ", {"SWB_CARLA_USD": str(Path(d) / "set")}):
+                got = surface_layer.register([str(m / "isaac" / "world.yaml")], str(state))
+                (key, files), = got.items()
+                self.assertEqual(key, str(Path(d) / "set" / "Town01" / "T.usda"))
+                self.assertEqual(files.surfaces, str(m / "surfaces.yaml"))
+                self.assertEqual(files.state, str(state / "Town01"))
+                self.assertEqual(files.map_dir, str(m))
+                (state / "Town01").mkdir(parents=True)
+                (state / "Town01" / "surfaces.yaml").write_text("defaults: {Road: gravel}\n")
+                (state / "Town01" / "road_detail.yaml").write_text("corridors: []\n")
+                files, = surface_layer.register([str(m / "isaac" / "world.yaml")],
+                                                str(state)).values()
+                self.assertEqual(files.surfaces, str(state / "Town01" / "surfaces.yaml"))
+                self.assertEqual(files.road, str(state / "Town01" / "road_detail.yaml"))
+                (state / "Town01" / "road_detail.yaml").write_text("bumps: 1\n")
+                with self.assertRaises(SurfaceError):
+                    surface_layer.register([str(m / "isaac" / "world.yaml")], str(state))
+            with mock.patch.dict("os.environ", {}, clear=True):
+                with self.assertRaises(SurfaceError) as e:
+                    surface_layer.register([str(m / "isaac" / "world.yaml")])
+                self.assertIn("SWB_CARLA_USD", str(e.exception))
+
+    def test_a_pair_is_map_files_too(self):
+        f = surface_layer.MapFiles.of(("/m/surfaces.yaml", (0.0, 0.0, 0.0)))
+        self.assertEqual(f.road, "/m/road_detail.yaml")
+        self.assertIsNone(f.state)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,5 @@
+# Town01's ground as it is; the road detail beside this file (road_detail.yaml) puts a rough
+# gravel corridor with rocks on the straight at y -131. ../town01_flat/surfaces.yaml is the
+# same map without it, the baseline. (Roadmap 066 R4/R5, spikes/multi_ego_road.py.)
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones: []

@@ -1,0 +1,17 @@
+# Town01's rough road: a gravel road with rocks on the straight at y -131 (x 95-345, between
+# the junctions, which town01_ego_drive's route runs along), both lanes. ISO 8608 class C, ruts,
+# potholes, a washboard zone and water bars; the carriageway's rock cover at 1 %, so the cars
+# meet rocks. The world's own road is the base. Copy this file and surfaces.yaml beside it into
+# Town01's map directory (or the project's state/Town01/). Every key: `ros2 run
+# swb_isaac_world road_detail keys`; check it: `road_detail check <this file>`.
+# (Roadmap 066 R4/R5's acceptance ground, spikes/multi_ego_road.py.)
+corridors:
+  - centreline: [[345.0, -131.1], [95.0, -131.1]]
+    seed: 66
+    roughness: {cls: C}
+    section: {half_width: 3.0, crown: 0.03, shoulder: 0.5}
+    ruts: {}
+    potholes: {per_100m: 2.5}
+    washboard: [{u0: 120, u1: 170, height: 0.02, pitch: 0.7}]
+    water_bars: {at: [60, 200]}
+    rocks: {carriageway: 0.01, shoulder: 0.01, ditch: 0.03}

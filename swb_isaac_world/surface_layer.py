@@ -12,7 +12,8 @@ reference class (`surfaces.NO_MAP`).
 Where the map comes from: `surfaces.yaml` in the map directory of a world file the server
 was started with (`--world`), looked for at every `LoadWorld`; swb's `LoadWorld` sends only
 the USD, which `register` maps back. (046's world protocol is the place for the map to say so
-itself.)
+itself.) With the server's state directory (`names`), `<state dir>/<map>/surfaces.yaml` and
+`road_detail.yaml` are used over the map directory's, and the ruts are saved there.
 
 In a soil zone (047 S3, `soil: grid | closed_form`) each wheel also runs the soil layer
 (`swb_isaac_world.soil`) on the load PhysX's suspension reports: the soil-limited friction replaces
@@ -39,6 +40,8 @@ the contact's scale (the tire's load over PhysX's); `flush` streams its render m
 import logging
 import math
 import os
+from pathlib import Path
+from typing import NamedTuple, Optional
 
 from . import road_layer, roll_bars, soil, surfaces
 
@@ -374,7 +377,7 @@ class SurfaceLayer:
             self.fresh_soil()
             log.info("ruts: fresh ground")
             return
-        path = surfaces.ruts_dir(self.base) / f"{name}.npz"
+        path = surfaces.rut_set(self.base, name)
         try:
             saved = soil.load_ruts(path)
         except soil.SoilError as e:
@@ -514,32 +517,59 @@ def wheel_points(vehicle, dt):
             for lx, ly in ((base, half), (base, -half), (0.0, half), (0.0, -half))]
 
 
-def register(world_files):
-    """`{usd realpath: (surfaces.yaml path, map origin)}` for the world files' map
-    directories, whether the surface map exists yet or not (one added later counts from the
-    next LoadWorld); one that exists and fails its check stops the server here, with every
-    problem listed."""
+class MapFiles(NamedTuple):
+    """A registered world's map files (`register`): its `surfaces.yaml` and `road_detail.yaml`
+    (each the state directory's over the map directory's, whether it exists yet or not), the
+    world's map origin, and the map's state directory (`<state dir>/<map>`, or None: the
+    server writes into the map directory). A 2-tuple `(surfaces, origin)` is one too."""
+
+    surfaces: str
+    origin: tuple
+    road: Optional[str] = None
+    state: Optional[str] = None
+    map_dir: Optional[str] = None
+
+    @classmethod
+    def of(cls, entry):
+        f = cls(*entry)
+        if f.road is None:
+            f = f._replace(road=os.path.join(os.path.dirname(f.surfaces), road_layer.FILE))
+        return f
+
+
+def register(world_files, state_dir=None):
+    """`{usd realpath: MapFiles}` for the world files' map directories, whether the surface
+    map exists yet or not (one added later counts from the next LoadWorld); one that exists
+    and fails its check stops the server here, with every problem listed. With `state_dir`
+    a map's own files are looked for in `<state_dir>/<map>/` first (`names.find_file`), and
+    what the server writes for it goes there."""
     import yaml
+
+    from . import names
 
     out = {}
     for world_file in world_files:
-        map_dir = os.path.dirname(os.path.dirname(world_file))
+        map_dir = names.map_dir_of(world_file)
         with open(world_file) as f:
             w = yaml.safe_load(f) or {}
-        usd = w.get("usd", "")
+        try:
+            usd = names.world_usd_of(world_file, w)
+        except names.UnresolvedName as e:
+            raise surfaces.SurfaceError(str(e)) from e
         if not usd:
             continue
-        usd = usd if os.path.isabs(usd) else os.path.join(map_dir, usd)
-        path = surfaces.find(map_dir)
+        state = names.state_for(state_dir, map_dir)
+        path = Path(names.find_file(surfaces.FILE, map_dir, state))
         if path.exists():
             surfaces.load(path)  # refused here, not at the first LoadWorld
-        road = path.parent / road_layer.FILE
+        road = Path(names.find_file(road_layer.FILE, map_dir, state))
         if road.exists():
             try:
                 road_layer.load(road)
             except road_layer.RoadDetailError as e:
                 raise surfaces.SurfaceError(str(e)) from e
-        out[os.path.realpath(usd)] = (str(path), tuple(w.get("map_origin") or (0.0, 0.0, 0.0)))
+        out[os.path.realpath(usd)] = MapFiles(
+            str(path), tuple(w.get("map_origin") or (0.0, 0.0, 0.0)), str(road), state, map_dir)
     return out
 
 

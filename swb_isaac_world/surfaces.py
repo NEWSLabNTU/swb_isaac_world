@@ -373,6 +373,10 @@ class SurfaceMap:
     defaults: dict  # label (or UNLABELLED) -> class
     zones: list
     allow_unvalidated: tuple = ()  # classes with stand-in soil parameters soil zones may use
+    # Where its rut sets are, in lookup order; the first is where the server saves. Empty:
+    # `<map dir>/ruts` only. The world server sets `(<state>/ruts, <map dir>/ruts)` for a map
+    # with a state directory (`names`, roadmap 076 A9).
+    ruts_dirs: tuple = ()
 
     @property
     def unvalidated(self):
@@ -582,7 +586,8 @@ def road_condition(surface_map, friction_scale=1.0, wetness="dry", properties=No
                 problems.append(f"{name}: {value!r} is not a set name ([a-z0-9_-]+) or "
                                 f"{RUTS_FRESH!r}")
             elif value != RUTS_FRESH and value not in have:
-                problems.append(f"{name}: no {value}.npz in {ruts_dir(surface_map)} (sets: "
+                where = " or ".join(map(str, ruts_dirs(surface_map)))
+                problems.append(f"{name}: no {value}.npz in {where} (sets: "
                                 f"{', '.join(have) or 'none'}; {RUTS_FRESH})")
             else:
                 ruts = value
@@ -630,16 +635,33 @@ def road_condition(surface_map, friction_scale=1.0, wetness="dry", properties=No
             dataclasses.replace(surface_map, zones=changed))
 
 
+def ruts_dirs(surface_map):
+    """Where a map's rut sets are, in lookup order: its `ruts_dirs`, else `<map dir>/ruts/`."""
+    if surface_map.ruts_dirs:
+        return [Path(d) for d in dict.fromkeys(surface_map.ruts_dirs)]
+    return [Path(surface_map.path).parent / RUTS_DIR]
+
+
 def ruts_dir(surface_map):
-    """Where a map's saved rut sets are: `<map dir>/ruts/`."""
-    return Path(surface_map.path).parent / RUTS_DIR
+    """Where the server saves a map's ruts (`<dir>/runs/`) and where a set is copied to be
+    named: the first of `ruts_dirs` (`<state>/ruts/`, or `<map dir>/ruts/`)."""
+    return ruts_dirs(surface_map)[0]
+
+
+def rut_set(surface_map, name):
+    """The file of rut set `name`: the first `ruts_dirs` entry holding `<name>.npz`, else
+    where it would be in `ruts_dir`."""
+    for d in ruts_dirs(surface_map):
+        if (d / f"{name}.npz").exists():
+            return d / f"{name}.npz"
+    return ruts_dir(surface_map) / f"{name}.npz"
 
 
 def available_ruts(surface_map):
-    """The names of the rut sets saved beside the map."""
+    """The names of the rut sets saved for the map (its state's and its own)."""
     if surface_map.path == NO_MAP:
         return []
-    return sorted(p.stem for p in ruts_dir(surface_map).glob("*.npz"))
+    return sorted({p.stem for d in ruts_dirs(surface_map) for p in d.glob("*.npz")})
 
 
 def hydroplane_factor(hp: Hydroplaning, speed, depth):

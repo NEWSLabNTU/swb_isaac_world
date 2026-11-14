@@ -1,0 +1,4 @@
+# Town01 with no road detail, the baseline for ../town01 (roadmap 066 R4/R5,
+# spikes/multi_ego_road.py: ROAD_TOWN=../swb_isaac_world/examples/road/town01_flat/surfaces.yaml).
+defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
+zones: []

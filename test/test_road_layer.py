@@ -48,6 +48,59 @@ class Parse(unittest.TestCase):
             self.assertIn(part, msg)
 
 
+class Schema(unittest.TestCase):
+    """road_detail.yaml's keys, documented and refused by name (roadmap 076 A9)."""
+
+    def test_every_key_is_listed(self):
+        keys = road_layer.keys()
+        for k in ("corridors", "ground", "corridors[].centreline", "corridors[].taper",
+                  "corridors[].washboard[].*", "corridors[].rocks.*"):
+            self.assertIn(k, keys)
+        self.assertEqual(keys["corridors[].washboard[].*"]["u0"], road_layer.REQUIRED)
+        self.assertEqual(keys["corridors[].section.*"]["half_width"], 2.5)
+
+    def test_washboard_and_shapes_are_refused_by_name(self):
+        line = [[0, 0], [100, 0]]
+        with self.assertRaises(road_layer.RoadDetailError) as e:
+            road_layer.parse({"corridors": [
+                {"centreline": line, "washboard": [{"u0": 1, "u1": 2, "wave": 3}, {"u0": 1}]},
+                {"centreline": line, "ruts": [1, 2]},
+                "nope"]})
+        msg = str(e.exception)
+        for part in ("washboard[0]: unknown ['wave']", "washboard[1]: needs u1",
+                     "corridors[1].ruts: a mapping", "corridors[2]: not a mapping"):
+            self.assertIn(part, msg)
+        with self.assertRaises(road_layer.RoadDetailError):
+            road_layer.parse([1, 2])
+
+    def test_the_examples_parse(self):
+        ex = ROOT / "swb_isaac_world" / "examples" / "road"
+        files = sorted(ex.glob("*/road_detail.yaml"))
+        self.assertGreaterEqual(len(files), 2)
+        for f in files:
+            self.assertTrue(road_layer.load(f), f)
+        town, = road_layer.load(ex / "town01" / "road_detail.yaml")
+        self.assertIsNotNone(town.rocks)
+        self.assertEqual(road_layer.find(str(ex / "town01")),
+                         str(ex / "town01" / "road_detail.yaml"))
+
+    def test_check_and_profile(self):
+        import contextlib
+        import io
+
+        ex = ROOT / "swb_isaac_world" / "examples" / "road" / "town01"
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(road_layer.main(["check", str(ex)]), 0)
+        self.assertIn("1 corridor(s)", out.getvalue())
+        self.assertIn("washboard 1 zone(s)", out.getvalue())
+        c, = road_layer.load(ex / "road_detail.yaml")
+        u, v, h = road_layer.profile(c, length=5.0)
+        self.assertEqual(h.shape, (len(v), len(u)))
+        self.assertTrue(np.isfinite(h).all())
+        self.assertLess(h.min(), -0.2)  # the ditches
+
+
 class Layer(unittest.TestCase):
     def car(self, z0=0.0, grade=0.0, x=10.0):
         """A vehicle standing at rest on a base of `grade`, PhysX's frame raised (R2)."""

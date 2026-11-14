@@ -1,3 +1,0 @@
-# Roadmap 066 R4/R5 acceptance (multi_ego_road.py): Town01 with no road detail, the baseline.
-defaults: {Road: asphalt, RoadLine: asphalt, SideWalk: concrete, Terrain: grass, Ground: dirt}
-zones: []

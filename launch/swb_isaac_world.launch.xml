@@ -8,7 +8,7 @@
     play_launch launch FLAGS \
         swb_isaac_world swb_isaac_world.launch.xml [ego:=default|none|<yaml>] \
         [world:=<world>[,<world>...]] [follow:=true|editor] [render:=auto|window|headless] [record:=<dir>]
-        [record_view:=offroad|road] [physics_hz:=60]
+        [record_view:=offroad|road] [physics_hz:=60] [state_dir:=<dir>] [wheels_topic:=true|false]
 
     FLAGS are the play_launch options web-addr 127.0.0.1:<SWB_WEB_PORT+5> (8085) and log-dir play_log/isaac
     (each with a double-hyphen prefix, which an XML comment cannot contain); `just isaac-world`
@@ -16,7 +16,8 @@
 
   Host settings come from the environment: ISAAC_PORT (REP port on 127.0.0.1, default 5590;
   `just run` gives swb the same), EGO_ROS_DOMAIN_ID (the ego's ROS domain, default 1: the ego
-  stack's, over the ego config's), DISPLAY (Isaac's window, render auto or window),
+  stack's, over the ego config's), SWB_CARLA_USD (the CARLA USD set's root: world files may name
+  it as ${SWB_CARLA_USD}, and course worlds find their props through it), DISPLAY (Isaac's window, render auto or window),
   ISAAC_HEADLESS=1 (render auto: headless with DISPLAY set), ISAAC_ROOT, CYCLONEDDS_URI.
 
   The server answers nothing until every world in world:= is loaded and rendered once (a
@@ -41,9 +42,14 @@
   <arg name="physics_hz" default="60"
        description="the physics rate, Hz (PhysX, the egos' onboard computers, the soil); the bridge splits each SSv2 step into steps no longer than 1 / this. The ego's commands are taken once per SSv2 step"/>
 
+  <arg name="state_dir" default=""
+       description="where the server writes for a map, and a project's own map files: state_dir/map/ (ruts, surfaces.yaml, road_detail.yaml, a course world's props link); empty: into the map directory"/>
+  <arg name="wheels_topic" default="true"
+       description="true: publish /swb/wheels on the ego's domain (diagnostic_msgs/DiagnosticArray, one status per ego wheel: class, zone, friction, slip_ratio, slip_angle, sinkage, normal_load; 20 Hz of sim time)"/>
+
   <!-- respawn_delay is a literal (stock ros2 launch rejects a substitution there). 10 s
        lets the dead server's GPU memory and port go before the next one claims them. -->
   <node pkg="swb_isaac_world" exec="swb_isaac_world_server" name="swb_isaac_world" output="screen"
         respawn="true" respawn_delay="10.0"
-        args="--port $(env ISAAC_PORT 5590) --ego $(var ego) --ego-domain $(env EGO_ROS_DOMAIN_ID 1) --world $(var world) --follow $(var follow) --render $(var render) --record=$(var record) --record-view $(var record_view) --physics-hz $(var physics_hz)"/>
+        args="--port $(env ISAAC_PORT 5590) --ego $(var ego) --ego-domain $(env EGO_ROS_DOMAIN_ID 1) --world $(var world) --follow $(var follow) --render $(var render) --record=$(var record) --record-view $(var record_view) --physics-hz $(var physics_hz) --state-dir=$(var state_dir) --wheels-topic $(var wheels_topic)"/>
 </launch>

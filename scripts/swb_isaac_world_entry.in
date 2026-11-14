@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+# `ros2 run swb_isaac_world @ENTRY_NAME@`: `python -m @ENTRY_MODULE@` from the source tree this
+# package was built from (SWB_ISAAC_DIR overrides it), in @ENTRY_PYTHON@ Python
+# (configured by CMakeLists.txt from scripts/swb_isaac_world_entry.in).
+#
+#   isaac:  Isaac Sim's own Python and ROS 2 libraries (scripts/isaac_env.sh; ISAAC_ROOT), the
+#           system Humble dropped first, as swb_isaac_world_server does;
+#   system: the system python3 (numpy and PyYAML; matplotlib for pictures).
+set -e
+swb_isaac_world="${SWB_ISAAC_DIR:-@SWB_ISAAC_DIR@}"
+if [ "@ENTRY_PYTHON@" = isaac ]; then
+    unset PYTHONPATH PYTHONHOME LD_LIBRARY_PATH AMENT_PREFIX_PATH CMAKE_PREFIX_PATH \
+        COLCON_PREFIX_PATH PKG_CONFIG_PATH ROS_PACKAGE_PATH ROS_LOCALHOST_ONLY ROS_VERSION \
+        ROS_PYTHON_VERSION VIRTUAL_ENV
+    PATH=$(printf '%s' "$PATH" | tr ':' '\n' | grep -v '^/opt/ros/\|^/opt/autoware/\|/install/' | paste -sd:)
+    export ISAAC_ROOT="${ISAAC_ROOT:-/mnt/disk1/isaac-sim}"
+    # shellcheck source=/dev/null
+    source "$swb_isaac_world/scripts/isaac_env.sh"
+    py=python
+else
+    py=python3
+fi
+# Relative paths in the arguments stay the caller's: the package is found by PYTHONPATH.
+export PYTHONPATH="$swb_isaac_world${PYTHONPATH:+:$PYTHONPATH}"
+exec "$py" -u -m @ENTRY_MODULE@ "$@"

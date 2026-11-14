@@ -2,7 +2,8 @@
 
     ISAAC_ROOT=... run_spike.sh fastrtps <log> $PWD/src/swb_isaac_world/spikes/multi_ego_road.py \\
         [<out dir>]
-    # ROAD_TOWN=road_town/flat/surfaces.yaml: the same Town01 without the road detail (baseline)
+    # ROAD_TOWN=../swb_isaac_world/examples/road/town01_flat/surfaces.yaml: the same Town01
+    # without the road detail (baseline)
     # ROAD_SPEED=11.1: m/s; ROAD_CASES=one,side,lane: the cases, in this order
     # ROAD_MESH=0: no render mesh; ROAD_ROCKS=0: no rock stream (what each costs)
     # ROAD_PROFILE=1: the frame's parts (Isaac's step, the surface layer's calls)
@@ -14,7 +15,7 @@ The budget's own measure (066 "The budget"; 052 step 5's 29.2 ms for one ego): a
 world server on Town01, every rig sensor on, without Autoware. Each ego gets its own command
 (the egos share one EgoRos, as in `multi_ego_soil.py`): a speed loop and a pure-pursuit driver
 on its lane, set on its vehicle as the vehicle interface would. Default ground:
-`road_town/surfaces.yaml`, whose `road_detail.yaml` lays R3's rough gravel corridor with R4's
+`swb_isaac_world/examples/road/town01/surfaces.yaml`, whose `road_detail.yaml` lays R3's rough gravel corridor with R4's
 rocks over the straight at y -131 (x 95-345). The egos head -x from x 330 to x 110.
 
 - one: one ego on the north lane (y -129.6);
@@ -54,7 +55,8 @@ REPO = os.path.abspath(os.path.join(HERE, "../../.."))
 OUT = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
     REPO, "play_log/multi_ego_road", time.strftime("%Y-%m-%d_%H-%M-%S"))
 WORLD = os.path.join(REPO, "data/carla-autoware-bridge/Town01/isaac/world.yaml")
-SURFACES = os.path.join(HERE, os.environ.get("ROAD_TOWN", "road_town/surfaces.yaml"))
+SURFACES = os.path.join(HERE, os.environ.get(
+    "ROAD_TOWN", "../swb_isaac_world/examples/road/town01/surfaces.yaml"))
 SPEED = float(os.environ.get("ROAD_SPEED", "11.1"))
 CASES = [c for c in os.environ.get("ROAD_CASES", "one,side,lane").split(",") if c]
 EGO_YAML = os.path.join(REPO, "src/autoware_isaac_bridge/src/aib/config/ego.yaml")

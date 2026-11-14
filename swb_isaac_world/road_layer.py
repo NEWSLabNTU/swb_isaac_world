@@ -30,10 +30,24 @@ With `rocks`, the corridor's rocks are placed per tile in the tile worker and th
 them (`rocks.RockSet`, `layer.rocks`); their prims, collision tiles and sleep are
 `rock_layer.RockStream`'s, which the world attaches as `layer.rock_stream`. A loose rock under
 a tire takes its share of the tire's force, reversed, and the car the lateral reversed (R4).
+
+Every key and field is listed, with its default, by `keys()` (`ros2 run swb_isaac_world
+road_detail keys`); an unknown one is refused by name. Examples to start from are in the
+package's `examples/road/` (installed to `share/swb_isaac_world/examples/road/`): Town01's
+rough gravel road with rocks, its flat baseline, and the proving ground's. Without Isaac:
+
+    ros2 run swb_isaac_world road_detail check <map dir | road_detail.yaml>
+    ros2 run swb_isaac_world road_detail preview <map dir | road_detail.yaml> [-o road.png]
+    ros2 run swb_isaac_world road_detail keys
+
+(`python3 -m swb_isaac_world.road_layer ...` from the package's source tree is the same.)
 """
+import argparse
 import dataclasses
 import logging
 import math
+import os
+import sys
 
 import numpy as np
 
@@ -57,34 +71,101 @@ class RoadDetailError(ValueError):
     pass
 
 
+# A corridor's keys that are one of road_detail's (or rocks') dataclasses: its fields by name.
+def _kinds():
+    return {"roughness": rd.Roughness, "section": rd.Section, "ruts": rd.Ruts,
+            "potholes": rd.Potholes, "water_bars": rd.WaterBars, "rocks": rk.Zones}
+
+
+TOP_KEYS = {
+    "corridors": "a list of corridors, each its centreline and its features",
+    "ground": "the prims of the world's own road ground, which the rocks do not collide with "
+              "(a list of prim paths; optional)",
+}
+CORRIDOR_KEYS = {
+    "centreline": "two or more [x, y] or [x, y, z] in the map frame, m (z: the base road's)",
+    "seed": "an integer: the same seed, the same road (default the corridor's index)",
+    "roughness": "ISO 8608 roughness (a mapping; absent: class D)",
+    "section": "the cross-section: crown, shoulder, ditch (a mapping; absent: defaults)",
+    "ruts": "two wheel ruts and a windrow (a mapping, {} for defaults; absent: none)",
+    "potholes": "Poisson potholes, more in sags (a mapping; absent: none)",
+    "washboard": "a list of corrugation zones, each u0 and u1 m along the centreline",
+    "water_bars": "oblique ridges across the road (a mapping; absent: none)",
+    "rocks": "rock cover per part of the section (a mapping; absent: no rocks)",
+    "taper": "m over which the detail fades in and out at the ends (default 0)",
+}
+
+
+REQUIRED = "(required)"  # a field with no default, in `keys()`
+
+
+def _fields(cls):
+    out = {}
+    for f in dataclasses.fields(cls):
+        if f.default is not dataclasses.MISSING:
+            out[f.name] = f.default
+        elif f.default_factory is not dataclasses.MISSING:  # pragma: no cover
+            out[f.name] = f.default_factory()
+        else:
+            out[f.name] = REQUIRED
+    return out
+
+
+def keys():
+    """road_detail.yaml's schema: `{"<key>": what}` for the file's and a corridor's keys, and
+    `{"corridors[].<key>.*": {field: default}}` for each mapping key (`REQUIRED`: no
+    default)."""
+    out = {k: v for k, v in TOP_KEYS.items()}
+    for k, v in CORRIDOR_KEYS.items():
+        out[f"corridors[].{k}"] = v
+    for name, cls in _kinds().items():
+        out[f"corridors[].{name}.*"] = _fields(cls)
+    out["corridors[].washboard[].*"] = _fields(rd.Washboard)
+    return out
+
+
 def parse(data, where=FILE):
     """The corridors of a road_detail.yaml's contents; RoadDetailError lists every problem."""
     problems = []
-    kinds = {"roughness": rd.Roughness, "section": rd.Section, "ruts": rd.Ruts,
-             "potholes": rd.Potholes, "water_bars": rd.WaterBars, "rocks": rk.Zones}
+    kinds = _kinds()
     out = []
-    unknown = set(data or {}) - {"corridors", "ground"}
+    if data is not None and not isinstance(data, dict):
+        raise RoadDetailError(f"{where}: not a mapping (corridors, ground)")
+    unknown = set(data or {}) - set(TOP_KEYS)
     if unknown:
         problems.append(f"{where}: unknown key(s) {sorted(unknown)} (corridors, ground)")
+    corridors = (data or {}).get("corridors") or []
+    if not isinstance(corridors, list):
+        problems.append(f"{where}: corridors must be a list")
+        corridors = []
     ground = (data or {}).get("ground") or []
     if not isinstance(ground, list) or not all(isinstance(g, str) for g in ground):
         problems.append(f"{where}: ground must be a list of prim paths")
         ground = []
-    for k, c in enumerate((data or {}).get("corridors") or []):
+    for k, c in enumerate(corridors):
         at = f"{where}: corridors[{k}]"
         args = {}
-        line = np.asarray(c.get("centreline") or [], dtype=float)
+        if not isinstance(c, dict):
+            problems.append(f"{at}: not a mapping ({', '.join(CORRIDOR_KEYS)})")
+            continue
+        try:
+            line = np.asarray(c.get("centreline") or [], dtype=float)
+        except (TypeError, ValueError):
+            line = np.zeros((0,))
         if line.ndim != 2 or line.shape[1] not in (2, 3) or len(line) < 2:
             problems.append(f"{at}: centreline must be two or more [x, y] or [x, y, z]")
             continue
-        bad = set(c) - {"centreline", "seed", "washboard", "taper", *kinds}
+        bad = set(c) - set(CORRIDOR_KEYS)
         if bad:
-            problems.append(f"{at}: unknown key(s) {sorted(bad)}")
+            problems.append(f"{at}: unknown key(s) {sorted(bad)} ({', '.join(CORRIDOR_KEYS)})")
         for name, cls in kinds.items():
             if name not in c:
                 continue
             fields = {f.name for f in dataclasses.fields(cls)}
             given = c[name] or {}
+            if not isinstance(given, dict):
+                problems.append(f"{at}.{name}: a mapping of {', '.join(sorted(fields))}")
+                continue
             if set(given) - fields:
                 problems.append(f"{at}.{name}: unknown {sorted(set(given) - fields)} "
                                 f"({', '.join(sorted(fields))})")
@@ -95,11 +176,21 @@ def parse(data, where=FILE):
                 given = dict(given, embed=tuple(given["embed"]))
             args[name] = cls(**given)
         zones = []
-        for z in c.get("washboard") or []:
-            try:
-                zones.append(rd.Washboard(**z))
-            except TypeError as e:
-                problems.append(f"{at}.washboard: {e}")
+        wb_fields = _fields(rd.Washboard)
+        for n, z in enumerate(c.get("washboard") or []):
+            if not isinstance(z, dict):
+                problems.append(f"{at}.washboard[{n}]: a mapping of {', '.join(wb_fields)}")
+                continue
+            if set(z) - set(wb_fields):
+                problems.append(f"{at}.washboard[{n}]: unknown {sorted(set(z) - set(wb_fields))}"
+                                f" ({', '.join(wb_fields)})")
+                continue
+            need = [f for f, d in wb_fields.items() if d is REQUIRED and f not in z]
+            if need:
+                problems.append(f"{at}.washboard[{n}]: needs {', '.join(need)} (m along the "
+                                "centreline)")
+                continue
+            zones.append(rd.Washboard(**z))
         if "roughness" in args and args["roughness"].cls not in rd.ISO_CLASS \
                 and not args["roughness"].gd0:
             problems.append(f"{at}.roughness: class {args['roughness'].cls} is not ISO 8608's "
@@ -120,6 +211,133 @@ def load(path):
 
     with open(path) as f:
         return parse(yaml.safe_load(f) or {}, str(path))
+
+
+def find(map_or_file, state=None):
+    """road_detail.yaml for a map directory (the state directory's over the map's, `names`),
+    or the file itself."""
+    from . import names
+
+    if os.path.isdir(map_or_file):
+        return names.find_file(FILE, map_or_file, state)
+    return str(map_or_file)
+
+
+def describe(corridors):
+    """One line per corridor: its length and features."""
+    out = []
+    for k, c in enumerate(corridors):
+        parts = [f"{c.length:.0f} m", f"seed {c.seed}",
+                 f"roughness {c.roughness.cls if not c.roughness.gd0 else c.roughness.gd0}",
+                 f"half width {c.section.half_width:g} m, crown {c.section.crown:g}"]
+        if c.ruts is not None:
+            parts.append(f"ruts {c.ruts.depth:g} m")
+        if c.potholes is not None:
+            parts.append(f"potholes {c.potholes.per_100m:g}/100 m")
+        if c.washboard:
+            parts.append(f"washboard {len(c.washboard)} zone(s)")
+        if c.water_bars is not None:
+            parts.append(f"water bars {list(c.water_bars.at) or 'by grade'}")
+        if c.rocks is not None:
+            parts.append(f"rocks {c.rocks.carriageway:g}/{c.rocks.shoulder:g}/"
+                         f"{c.rocks.ditch:g}")
+        if c.taper:
+            parts.append(f"taper {c.taper:g} m")
+        out.append(f"corridor {k}: " + ", ".join(parts))
+    return out
+
+
+def profile(corridor, length=60.0, spacing=0.1, start=0.0):
+    """The corridor's detail along its first `length` m from `start`, on a (u, v) grid:
+    (u (n,), v (m,), heights (m, n) m above the base). Pure numpy (no rocks)."""
+    c = corridor
+    u = np.arange(start, min(start + length, c.length), spacing)
+    half = c.section.extent()
+    v = np.arange(-half, half + spacing / 2, spacing)
+    seg = np.clip(np.searchsorted(c.seg_u, u, side="right") - 1, 0, len(c.seg_len) - 1)
+    t = u - c.seg_u[seg]
+    foot = c.centreline[seg] + t[:, None] * c.seg_dir[seg]
+    left = np.stack([-c.seg_dir[seg, 1], c.seg_dir[seg, 0]], axis=1)
+    pts = foot[None, :, :] + v[:, None, None] * left[None, :, :]
+    detail = rd.Detail([c])
+    try:
+        h = detail.height(pts[..., 0], pts[..., 1])
+    finally:
+        detail.close()
+    return u, v, h
+
+
+def preview(path, out, corridor=0, length=60.0):
+    """A picture of corridor `corridor`'s first `length` m (heights, and a cross-section and
+    a wheel track's profile): writes `out` (matplotlib)."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    c = load(path)[corridor]
+    u, v, h = profile(c, length)
+    fig, ax = plt.subplots(3, 1, figsize=(12, 9), gridspec_kw={"height_ratios": [2, 1, 1]})
+    im = ax[0].imshow(h * 100, extent=(u[0], u[-1], v[0], v[-1]), origin="lower",
+                      aspect="auto", cmap="terrain")
+    fig.colorbar(im, ax=ax[0], label="cm above the base")
+    ax[0].set_ylabel("v (m, left of the centreline)")
+    ax[0].set_title(f"{path}: {describe([c])[0]}", fontsize=8)
+    mid = len(u) // 2
+    ax[1].plot(v, h[:, mid] * 100)
+    ax[1].set_xlabel(f"v (m) at u {u[mid]:.1f} m")
+    ax[1].set_ylabel("cm")
+    track = int(np.argmin(np.abs(v - 0.8)))
+    ax[2].plot(u, h[track] * 100)
+    ax[2].set_xlabel("u (m along the centreline), the left wheel track (v 0.8 m)")
+    ax[2].set_ylabel("cm")
+    fig.tight_layout()
+    fig.savefig(out, dpi=120)
+    plt.close(fig)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(prog="road_detail",
+                                 description="Check, picture or list the keys of a "
+                                             "road_detail.yaml (roadmap 066 R3)")
+    ap.add_argument("command", choices=("check", "preview", "keys"))
+    ap.add_argument("map", nargs="?", default="",
+                    help="a map directory (its road_detail.yaml) or a road_detail.yaml")
+    ap.add_argument("-o", "--output", default="",
+                    help="preview: the image (default road_detail.png here)")
+    ap.add_argument("--corridor", type=int, default=0, help="preview: which corridor")
+    ap.add_argument("--length", type=float, default=60.0, help="preview: m along it")
+    args = ap.parse_args(argv)
+    if args.command == "keys":
+        for k, v in keys().items():
+            if isinstance(v, dict):
+                fields = ", ".join(f"{f} {d}" for f, d in v.items())
+                print(f"{k}: {fields}")
+            else:
+                print(f"{k}: {v}")
+        return 0
+    if not args.map:
+        ap.error(f"{args.command} needs a map directory or a road_detail.yaml")
+    path = find(args.map)
+    if not os.path.exists(path):
+        print(f"{path}: no road detail", file=sys.stderr)
+        return 1
+    try:
+        corridors = load(path)
+    except RoadDetailError as e:
+        print(f"{path}: refused\n{e}", file=sys.stderr)
+        return 1
+    print(f"{path}: {len(corridors)} corridor(s)")
+    for line in describe(corridors):
+        print(f"  {line}")
+    if args.command == "preview":
+        if not 0 <= args.corridor < len(corridors):
+            print(f"no corridor {args.corridor}", file=sys.stderr)
+            return 1
+        out = args.output or "road_detail.png"
+        preview(path, out, args.corridor, args.length)
+        print(f"wrote {out}")
+    return 0
 
 
 def load_ground(path):
@@ -420,3 +638,7 @@ class MeshStream:
         for path in self.meshes.values():
             self.stage.RemovePrim(path)
         self.meshes.clear()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
