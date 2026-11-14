@@ -72,6 +72,25 @@ class RoadContactTest(unittest.TestCase):
         self.assertEqual(float(tc.friction_scale(np.zeros(1), px)[0]), 0.0)
 
 
+class Reach(unittest.TestCase):
+    def test_every_sample_lies_within_reach(self):
+        """`reach` bounds where a step reads: the road layer skips the rocks when none lies
+        that close to a wheel."""
+        tc = rc.TireContact([rc.Corner(SPRUNG, K, C, TRAVEL, R, WIDTH)] * 4)
+        xy = np.array([[10.0, 1.0], [10.0, -1.0], [7.0, 1.0], [7.0, -1.0]])
+        for v, dt in ((0.0, 1 / 480), (11.1, 1 / 480), (40.0, 1 / 60), (-5.0, 1 / 180)):
+            for yaw in (0.0, 0.7, 2.5):
+                heading = np.tile([np.cos(yaw), np.sin(yaw)], (4, 1))
+                speed = np.full(4, v)
+                hd = heading * np.where(speed < 0, -1.0, 1.0)[:, None]
+                pts = []
+                tc.samples(lambda x, y: pts.append((np.array(x), np.array(y))) or np.zeros(
+                    np.shape(x)), xy, hd, abs(v) * dt)
+                px, py = pts[0]
+                d = np.hypot(px - xy[:, 0, None, None], py - xy[:, 1, None, None])
+                self.assertLessEqual(d.max(), tc.reach(dt, speed) + 1e-9)
+
+
 if __name__ == "__main__":
     unittest.main()
 

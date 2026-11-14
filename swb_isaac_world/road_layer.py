@@ -238,7 +238,7 @@ class _Car:
         if len(hits) >= 3:
             a = np.array([[c.position[0], c.position[1], 1.0] for c in hits])
             z = np.array([c.position[2] for c in hits])
-            (ga, gb, _), *_ = np.linalg.lstsq(a, z, rcond=None)
+            ga, gb = _fit_slope(a[:, 0], a[:, 1], z)
             cs = []
             for k, c in enumerate(self.v.contacts):
                 if c.on_ground:
@@ -287,6 +287,11 @@ class _Car:
 
         rocks, stream = layer.rocks, layer.rock_stream
         zu0 = self.contact.zu.copy()
+        # one grid lookup for the whole car: with no rock within reach of any wheel's samples
+        # (the common case), no rock reads, rock tops or footprints this step
+        if rocks is not None and not rocks.near(xy[:, 0], xy[:, 1],
+                                                margin=self.contact.reach(dt, speed)).size:
+            rocks = None
         if rocks is not None and stream is not None:
             stream.read_near(xy, road_any, dt)  # the awake rocks where PhysX has them
             height = rocks.height(road)
@@ -316,6 +321,21 @@ class _Car:
                     out.append(((float(lat[i][0]), float(lat[i][1]), 0.0),
                                 (float(xy[i, 0]), float(xy[i, 1]), cz)))
         return out
+
+
+def _fit_slope(x, y, z):
+    """The slopes (a, b) of the least-squares plane z = a x + b y + c through the points, in
+    closed form on centred coordinates (`np.linalg.lstsq` costs more than the rest of the
+    fit for four points); lstsq's minimum-norm answer where the points are collinear."""
+    dx, dy, dz = x - x.mean(), y - y.mean(), z - z.mean()
+    sxx, syy, sxy = dx @ dx, dy @ dy, dx @ dy
+    det = sxx * syy - sxy * sxy
+    if det <= 1e-12 * max(sxx * syy, 1e-30):
+        a = np.stack([x, y, np.ones_like(x)], axis=1)
+        (ga, gb, _), *_ = np.linalg.lstsq(a, z, rcond=None)
+        return float(ga), float(gb)
+    sxz, syz = dx @ dz, dy @ dz
+    return float((syy * sxz - sxy * syz) / det), float((sxx * syz - sxy * sxz) / det)
 
 
 class MeshStream:

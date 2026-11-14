@@ -218,7 +218,7 @@ class Placement(unittest.TestCase):
                     top = p[2] + r.verts[:, 2].max()
                     h = float(d.height(np.array([p[0]]), np.array([p[1]]))[0])
                     if dyn:
-                        self.assertLessEqual(max(r.verts[:, 0].ptp(), r.verts[:, 1].ptp()),
+                        self.assertLessEqual(max(np.ptp(r.verts[:, 0]), np.ptp(r.verts[:, 1])),
                                              2 * 0.30 / 1.7 * 1.25)
                     else:
                         self.assertLessEqual(top - h, 0.05 + 1e-9)

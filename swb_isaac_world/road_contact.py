@@ -284,6 +284,15 @@ class TireContact:
         self.w_prev = W[:, -1].copy()
         return FS, FT, COMP, J, S
 
+    def reach(self, dt, speed):
+        """How far from a wheel's contact anything this step reads can lie (m): the road's
+        samples over the step (`samples`) and a rock's footprint on the tire (`rocks.shares`:
+        0.6 radius along), across the half width."""
+        along = max(float(self.lift_u[-1]) + self.ls / 2
+                    + float(np.max(np.abs(speed))) * dt + 2 * DU,
+                    0.6 * float(np.max(self.r)))
+        return float(np.hypot(along, 0.5 * float(np.max(self.width))))
+
     def friction_scale(self, load, px_load):
         """The share of the rig's friction each wheel gets so that PhysX's tire, saturating at
         mu times its own load (the sprung share), grips as the tire's real load allows."""

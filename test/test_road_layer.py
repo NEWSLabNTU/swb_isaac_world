@@ -162,3 +162,28 @@ class MeshFaces(unittest.TestCase):
         self.assertTrue((np.abs(ys[~road]) >= edge - s).all())
         self.assertGreater(road.sum(), 0)
         self.assertGreater((~road).sum(), 0)
+
+
+class PlaneFit(unittest.TestCase):
+    def test_the_closed_form_is_lstsq(self):
+        rng = np.random.default_rng(3)
+        for _ in range(200):
+            n = int(rng.integers(3, 5))
+            x = 300.0 + rng.uniform(-2, 2, n)  # world coordinates, far from the origin
+            y = -150.0 + rng.uniform(-1, 1, n)
+            z = 0.02 * x - 0.03 * y + rng.normal(0, 0.01, n)
+            a = np.stack([x, y, np.ones(n)], axis=1)
+            (ga, gb, _), *_ = np.linalg.lstsq(a, z, rcond=None)
+            fa, fb = road_layer._fit_slope(x, y, z)
+            self.assertAlmostEqual(fa, ga, delta=1e-7)
+            self.assertAlmostEqual(fb, gb, delta=1e-7)
+
+    def test_collinear_points_fall_back_to_lstsq(self):
+        x = np.array([0.0, 1.0, 2.0])
+        y = 2.0 * x
+        z = np.array([0.0, 0.1, 0.2])
+        a = np.stack([x, y, np.ones(3)], axis=1)
+        (ga, gb, _), *_ = np.linalg.lstsq(a, z, rcond=None)
+        fa, fb = road_layer._fit_slope(x, y, z)
+        self.assertAlmostEqual(fa, ga, places=9)
+        self.assertAlmostEqual(fb, gb, places=9)
